@@ -3,7 +3,7 @@
 > **Bright Data "Web Data UNLOCKED" Hackathon · Track 2 — Finance & Market Intelligence**
 > Powered by **Bright Data** (live web) + **Featherless AI** (open-source inference) + **cognee** (agent memory)
 
-**Repository:** [github.com/CuevaLabsDev/TCB-BrightData](https://github.com/CuevaLabsDev/TCB-BrightData) · **Live demo:** [trading-card-block.vercel.app](https://trading-card-block.vercel.app) · **Submission pack:** [`submission/`](submission/)
+**Repository:** [github.com/CuevaLabsDev/TCB-BrightData](https://github.com/CuevaLabsDev/TCB-BrightData) · **Live demo:** [trading-card-block.vercel.app](https://trading-card-block.vercel.app)
 
 **Trading Card Block** is where the Pokémon card market lives in one place. Pricing, liquidity,
 grading spreads, and creator sentiment are scattered across TCGplayer, eBay, and social — TCB
@@ -209,7 +209,6 @@ node scripts/verify-triggerware.mjs  # connectivity + double-poll smoke test (ex
 - ✅ **Featherless partner** — agent tool-calling + extraction on open-source models.
 - ✅ **Track 2 fit** — a unified market hub with real-time financial intelligence for an alt-asset class.
 - ✅ **Working product** — full ingest, 5 live data layers, agent, live alerts, deployed.
-- 📦 **Submission assets** — PDF deck, cover, and video: see [`submission/README.md`](submission/README.md). Generate with `npm run submission:slides`, `submission:voice`, `submission:video`.
 
 ## License
 

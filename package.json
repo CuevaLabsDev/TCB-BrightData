@@ -8,10 +8,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint",
-    "submission:slides": "node submission/scripts/export-slides.mjs",
-    "submission:voice": "node submission/scripts/generate-voiceover.mjs",
-    "submission:video": "bash submission/scripts/assemble-video.sh"
+    "lint": "eslint"
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.67",
@@ -37,9 +34,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
-    "pdfkit": "^0.18.0",
     "server-only": "^0.0.1",
-    "sharp": "^0.34.5",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
