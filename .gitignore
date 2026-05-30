@@ -45,9 +45,12 @@ next-env.d.ts
 .cursor/
 .claude/
 
-# submission build artifacts (sources committed; regenerate with npm run submission:*)
-submission/presentation/output/
-submission/video/output/
+# submission intermediates (final deliverables are force-tracked)
+submission/presentation/output/deck.*.png
+submission/video/output/slides.mp4
+submission/video/output/concat_slides.txt
+submission/video/output/visual_no_audio.mp4
+submission/video/output/voiceover.mp3
 submission/video/raw/
 
 # python pipeline

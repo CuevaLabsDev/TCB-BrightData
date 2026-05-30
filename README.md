@@ -3,7 +3,7 @@
 > **Bright Data "Web Data UNLOCKED" Hackathon · Track 2 — Finance & Market Intelligence**
 > Powered by **Bright Data** (live web) + **Featherless AI** (open-source inference) + **cognee** (agent memory)
 
-**Repository:** [github.com/CuevaLabs-Founder/TCB-BrightData](https://github.com/CuevaLabs-Founder/TCB-BrightData) · **Live demo:** [tcb-bright-data.vercel.app](https://tcb-bright-data.vercel.app) · **Submission pack:** [`submission/`](submission/)
+**Repository:** [github.com/CuevaLabsDev/TCB-BrightData](https://github.com/CuevaLabsDev/TCB-BrightData) · **Live demo:** [trading-card-block.vercel.app](https://trading-card-block.vercel.app) · **Submission pack:** [`submission/`](submission/)
 
 **Trading Card Block** is where the Pokémon card market lives in one place. Pricing, liquidity,
 grading spreads, and creator sentiment are scattered across TCGplayer, eBay, and social — TCB
