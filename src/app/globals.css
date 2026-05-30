@@ -1,26 +1,116 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #070908;
+  --foreground: #f7f4ea;
+  --panel: #101412;
+  --panel-strong: #151b18;
+  --border: #27332d;
+  --muted: #a8b0aa;
+  --subtle: #66736b;
+  --accent: #6ee7d8;
+  --accent-foreground: #06211d;
+  --accent-2: #f5c56b;
+  --success: #7ddc83;
+  --warning: #f5c56b;
+  --danger: #f47d8a;
+  --info: #8bc8ff;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-panel: var(--panel);
+  --color-panel-strong: var(--panel-strong);
+  --color-border: var(--border);
+  --color-muted: var(--muted);
+  --color-subtle: var(--subtle);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent-2: var(--accent-2);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-info: var(--info);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+body {
+  background:
+    linear-gradient(180deg, rgba(13, 19, 16, 0.98) 0%, var(--background) 30rem),
+    var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), system-ui, sans-serif;
+}
+
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* thin scrollbars in dark panels */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(247, 244, 234, 0.14) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(247, 244, 234, 0.14);
+  border-radius: 8px;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+
+.holo-text {
+  background: linear-gradient(90deg, #6ee7d8 0%, #f5c56b 35%, #f47d8a 70%, #8bc8ff 100%);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: shimmer 5s linear infinite;
+}
+
+.grid-bg {
+  background-image:
+    linear-gradient(rgba(247, 244, 234, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(247, 244, 234, 0.035) 1px, transparent 1px);
+  background-size: 44px 44px;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.pulse-dot { animation: pulse-dot 1.8s ease-in-out infinite; }
+
+.card-surface {
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  background:
+    linear-gradient(180deg, rgba(21, 27, 24, 0.88), rgba(11, 14, 13, 0.86)),
+    var(--panel);
+  border-radius: 0.5rem;
+  box-shadow:
+    inset 0 1px 0 rgba(247, 244, 234, 0.05),
+    0 18px 45px rgba(0, 0, 0, 0.18);
+}
+
+.card-surface-hover {
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease,
+    transform 160ms ease;
+}
+
+.card-surface-hover:hover {
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  transform: translateY(-1px);
 }

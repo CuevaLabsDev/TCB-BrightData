@@ -39,3 +39,19 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local IDE / agent skills (not part of shipped app)
+.agents/
+.cursor/
+.claude/
+
+# submission build artifacts (sources committed; regenerate with npm run submission:*)
+submission/presentation/output/
+submission/video/output/
+submission/video/raw/
+
+# python pipeline
+pipeline/.venv
+__pycache__/
+*.pyc
+.pytest_cache/

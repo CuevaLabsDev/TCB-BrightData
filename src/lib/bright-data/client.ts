@@ -1,0 +1,138 @@
+import "server-only";
+
+/**
+ * Bright Data Web Data UNLOCKED client.
+ *
+ * Two products via the unified `/request` API:
+ *   - SERP API      (zone BRIGHT_DATA_SERP_ZONE)    — Google/structured search
+ *   - Web Unlocker  (zone BRIGHT_DATA_UNLOCKER_ZONE) — bot-protected pages (eBay,
+ *                                                       TCGplayer, social)
+ *
+ * Every public-web call in this app routes through here, satisfying the
+ * hackathon's "must use a Bright Data product" requirement.
+ */
+
+const BRIGHT_DATA_API = "https://api.brightdata.com/request";
+
+export interface SerpOrganic {
+  title?: string;
+  link?: string;
+  description?: string;
+  display_link?: string;
+  rank?: number;
+}
+
+export function hasBrightData() {
+  return Boolean(process.env.BRIGHT_DATA_API_KEY);
+}
+
+function serpZone() {
+  return process.env.BRIGHT_DATA_SERP_ZONE || "serp_api1";
+}
+function unlockerZone() {
+  return process.env.BRIGHT_DATA_UNLOCKER_ZONE || "tcb_1";
+}
+
+export interface RawRequestOpts {
+  format?: "raw" | "json";
+  country?: string;
+  method?: "GET" | "POST";
+  /** Raw POST body forwarded to the target URL. */
+  body?: string;
+  /** Custom headers forwarded to the target URL. */
+  headers?: Record<string, string>;
+  timeoutMs?: number;
+}
+
+async function rawRequest(
+  zone: string,
+  url: string,
+  opts: RawRequestOpts = {},
+): Promise<string> {
+  const apiKey = process.env.BRIGHT_DATA_API_KEY;
+  if (!apiKey) throw new Error("BRIGHT_DATA_API_KEY is not configured");
+
+  const payload: Record<string, unknown> = {
+    zone,
+    url,
+    format: opts.format ?? "raw",
+  };
+  if (opts.country) payload.country = opts.country;
+  if (opts.method) payload.method = opts.method;
+  if (opts.body) payload.body = opts.body;
+  if (opts.headers) payload.headers = opts.headers;
+
+  const res = await fetch(BRIGHT_DATA_API, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+    // Bright Data unlocker can take a while on hard targets
+    signal: AbortSignal.timeout(opts.timeoutMs ?? 60_000),
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Bright Data ${zone} failed (${res.status}): ${text.slice(0, 300)}`);
+  }
+  return res.text();
+}
+
+/** Low-level access to the Web Unlocker zone for arbitrary GET/POST JSON APIs. */
+export async function unlockerRequest(
+  url: string,
+  opts: RawRequestOpts = {},
+): Promise<string> {
+  return rawRequest(unlockerZone(), url, opts);
+}
+
+/** Google SERP via Bright Data SERP API, parsed JSON (brd_json=1). */
+export async function serpSearch(
+  query: string,
+  opts: { country?: string; num?: number } = {},
+): Promise<{ organic: SerpOrganic[]; raw?: string }> {
+  const params = new URLSearchParams({ q: query, brd_json: "1" });
+  if (opts.num) params.set("num", String(opts.num));
+  const url = `https://www.google.com/search?${params.toString()}`;
+  const raw = await rawRequest(serpZone(), url, {
+    format: "raw",
+    country: opts.country ?? "us",
+  });
+  try {
+    const parsed = JSON.parse(raw) as { organic?: SerpOrganic[] };
+    return { organic: parsed.organic ?? [] };
+  } catch {
+    return { organic: [], raw };
+  }
+}
+
+/** Fetch a bot-protected page's HTML via Web Unlocker. */
+export async function unlockPage(url: string, country = "us"): Promise<string> {
+  return rawRequest(unlockerZone(), url, { format: "raw", country });
+}
+
+/**
+ * Fetch a page that returns JSON (e.g. a marketplace API endpoint) through the
+ * Web Unlocker and parse it.
+ */
+export async function unlockJson<T = unknown>(
+  url: string,
+  country = "us",
+): Promise<T | null> {
+  const text = await rawRequest(unlockerZone(), url, { format: "raw", country });
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
+}
+
+export function brightDataStatus() {
+  return {
+    configured: hasBrightData(),
+    serpZone: serpZone(),
+    unlockerZone: unlockerZone(),
+  };
+}

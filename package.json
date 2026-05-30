@@ -1,17 +1,34 @@
 {
-  "name": "tcb-intel",
-  "version": "0.1.0",
+  "name": "trading-card-block",
+  "description": "Trading Card Block — Agentic enterprise trading-card market intelligence on Bright Data live web data (Track 2 · Web Data UNLOCKED).",
+  "license": "MIT",
+  "version": "1.0.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "submission:slides": "node submission/scripts/export-slides.mjs",
+    "submission:voice": "node submission/scripts/generate-voiceover.mjs",
+    "submission:video": "bash submission/scripts/assemble-video.sh"
   },
   "dependencies": {
+    "@ai-sdk/openai": "^3.0.67",
+    "@ai-sdk/react": "^3.0.195",
+    "ai": "^6.0.193",
+    "cheerio": "^1.2.0",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.17.0",
     "next": "16.2.6",
+    "postgres": "^3.4.9",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "react-markdown": "^10.1.0",
+    "recharts": "^3.8.1",
+    "remark-gfm": "^4.0.1",
+    "tailwind-merge": "^3.6.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -20,6 +37,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
+    "server-only": "^0.0.1",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

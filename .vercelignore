@@ -1,0 +1,14 @@
+# The Python pipeline runs locally / via cron, not on Vercel — exclude it.
+pipeline/.venv
+pipeline/__pycache__
+**/__pycache__
+*.pyc
+
+# Large local artifacts
+.next
+node_modules
+artifacts
+
+# Docs/scratch
+*.log
+.DS_Store

@@ -1,0 +1,9 @@
+# Core ingest + warehouse
+psycopg[binary]>=3.2
+py7zr>=0.22
+python-dotenv>=1.0
+requests>=2.32
+
+# Market-memory layer (added in the cognee step)
+# cognee>=0.1.40
+# fastembed>=0.4
