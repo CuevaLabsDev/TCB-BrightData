@@ -54,9 +54,12 @@ src/
 pipeline/           — Python ingest (run from repo root)
   db.py             — psycopg3 helpers + schema apply
   catalog.py        — tcgcsv groups + products ingest
-  prices.py         — daily archive ingest + price_windows compute
+  prices.py         — archive ingest + --incremental daily upsert
   memory.py         — cognee market-memory build
   requirements.txt
+
+.github/workflows/
+  tcgcsv-daily.yml  — free GHA cron: catalog + prices --incremental
 
 supabase/
   schema.sql        — canonical schema (apply with pipeline.db apply-schema)
@@ -108,6 +111,7 @@ ingest_runs     — Pipeline bookkeeping
 - Connection priority: `PIPELINE_DB_URL` > `SUPABASE_DB_URL` > `DATABASE_URL` (see `pipeline/db.py`)
 - Bulk loads use psycopg `COPY` — use the session pooler URL (port 5432) for `PIPELINE_DB_URL`, not the transaction pooler
 - Never run destructive pipeline operations (schema drops, table truncates) without explicit user confirmation
+- **Daily tcgcsv refresh** runs on free GitHub Actions (`.github/workflows/tcgcsv-daily.yml`), not Vercel: `python -m pipeline.prices --incremental` downloads today's archive, upserts `daily_prices`, and recomputes `price_windows`. Requires the `PIPELINE_DB_URL` Actions secret (session pooler). Full truncate/reload remains a local backfill only (`python -m pipeline.prices`).
 
 ## Bright Data rules
 
@@ -127,7 +131,7 @@ ingest_runs     — Pipeline bookkeeping
 
 ```env
 SUPABASE_DB_URL          # required — transaction pooler URL
-PIPELINE_DB_URL          # optional — session pooler for bulk COPY
+PIPELINE_DB_URL          # session pooler for bulk COPY + GHA tcgcsv-daily secret
 BRIGHT_DATA_API_KEY      # required for live enrichment
 FEATHERLESS_API_KEY      # required for agent chat
 FEATHERLESS_MODEL        # optional — any OpenAI-compatible model ID

@@ -10,17 +10,22 @@ only category-3 (Pokemon) ``{date}/3/{groupId}/prices`` files, then:
 Default is full-catalog breadth (windows for all 44k series) with 365 days of
 daily charts for series >= $2. Use ``--daily-days all --min-market 0`` for the
 full 2-year daily depth (needs Supabase Pro storage).
+
+Incremental mode (``--incremental``) downloads one day's archive from tcgcsv,
+upserts into ``daily_prices``, and recomputes ``price_windows`` from DB history.
+Used by the free GitHub Actions daily job — does not truncate ``daily_prices``.
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
-import io
 import json
 import re
 import tempfile
 import shutil
 import statistics
+import urllib.error
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -30,6 +35,7 @@ from .db import get_conn
 from .movement import compute_movement
 
 ARCHIVE_DIR = Path.home() / ".tcgcsv" / "archives"
+ARCHIVE_BASE = "https://tcgcsv.com/archive/tcgplayer"
 CAT3_RE = re.compile(r"/3/\d+/prices$")
 WINDOW_DAYS = 181          # archives needed to cover a 180d lookback
 LOOKBACKS = {"7d": 7, "30d": 30, "90d": 90, "180d": 180}
@@ -43,6 +49,69 @@ def archive_dates() -> list[tuple[dt.date, Path]]:
             out.append((dt.date.fromisoformat(m.group(1)), p))
     out.sort()
     return out
+
+
+def download_archive(day: dt.date, dest_dir: Path) -> Path:
+    """Download ``prices-YYYY-MM-DD.ppmd.7z`` into dest_dir. Raises on HTTP errors."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    path = dest_dir / f"prices-{day.isoformat()}.ppmd.7z"
+    if path.is_file() and path.stat().st_size > 0:
+        print(f"[prices] using cached {path}", flush=True)
+        return path
+
+    url = f"{ARCHIVE_BASE}/prices-{day.isoformat()}.ppmd.7z"
+    print(f"[prices] downloading {url}", flush=True)
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "tcb-ingest/1.0 (daily-incremental)"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            path.write_bytes(resp.read())
+    except urllib.error.HTTPError as e:
+        if path.exists():
+            path.unlink(missing_ok=True)
+        raise FileNotFoundError(f"archive not found for {day}: HTTP {e.code}") from e
+    except Exception:
+        if path.exists():
+            path.unlink(missing_ok=True)
+        raise
+
+    if path.stat().st_size == 0:
+        path.unlink(missing_ok=True)
+        raise FileNotFoundError(f"empty archive for {day}")
+    print(f"[prices] saved {path} ({path.stat().st_size // 1024} KB)", flush=True)
+    return path
+
+
+def resolve_archive_day(
+    explicit: dt.date | None = None,
+    dest_dir: Path | None = None,
+) -> tuple[dt.date, Path]:
+    """Return (day, path). Try today then yesterday unless ``explicit`` is set."""
+    dest = dest_dir or ARCHIVE_DIR
+    if explicit is not None:
+        # Prefer a local cache under ARCHIVE_DIR when present.
+        local = ARCHIVE_DIR / f"prices-{explicit.isoformat()}.ppmd.7z"
+        if local.is_file() and local.stat().st_size > 0:
+            return explicit, local
+        return explicit, download_archive(explicit, dest)
+
+    today = dt.date.today()
+    candidates = [today, today - dt.timedelta(days=1)]
+    errors: list[str] = []
+    for day in candidates:
+        local = ARCHIVE_DIR / f"prices-{day.isoformat()}.ppmd.7z"
+        if local.is_file() and local.stat().st_size > 0:
+            print(f"[prices] using local archive for {day}", flush=True)
+            return day, local
+        try:
+            return day, download_archive(day, dest)
+        except FileNotFoundError as e:
+            errors.append(str(e))
+            continue
+    raise SystemExit(
+        "no tcgcsv archive available for today or yesterday:\n  " + "\n  ".join(errors)
+    )
 
 
 def parse_archive(path: Path) -> list[tuple]:
@@ -351,15 +420,181 @@ def recompute_windows_only(workers: int) -> None:
     compute_movement()
 
 
+def upsert_day(day: dt.date, rows: list[tuple], min_market: float) -> int:
+    """Upsert one day's prices for series with market >= min_market. No truncate."""
+    tracked: list[tuple] = []
+    for pid, sub, low, mid, high, market, dlow in rows:
+        if market is not None and float(market) >= min_market:
+            tracked.append((pid, sub, day, low, mid, high, market, dlow))
+
+    if not tracked:
+        print(f"[prices] upsert {day}: 0 tracked rows (min_market=${min_market})", flush=True)
+        return 0
+
+    print(
+        f"[prices] upserting {len(tracked)} rows for {day} (min_market=${min_market})",
+        flush=True,
+    )
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("set statement_timeout = 0;")
+            cur.execute(
+                """
+                create temporary table daily_prices_stage (
+                  product_id integer,
+                  sub_type   text,
+                  date       date,
+                  low        numeric,
+                  mid        numeric,
+                  high       numeric,
+                  market     numeric,
+                  direct_low numeric
+                ) on commit drop
+                """
+            )
+            with cur.copy(
+                "copy daily_prices_stage "
+                "(product_id, sub_type, date, low, mid, high, market, direct_low) "
+                "from stdin"
+            ) as cp:
+                for row in tracked:
+                    cp.write_row(row)
+            cur.execute(
+                """
+                insert into daily_prices
+                  (product_id, sub_type, date, low, mid, high, market, direct_low)
+                select product_id, sub_type, date, low, mid, high, market, direct_low
+                from daily_prices_stage
+                on conflict (product_id, sub_type, date) do update set
+                  low = excluded.low,
+                  mid = excluded.mid,
+                  high = excluded.high,
+                  market = excluded.market,
+                  direct_low = excluded.direct_low
+                """
+            )
+        conn.commit()
+    print(f"[prices] daily_prices upserted: {len(tracked)} rows", flush=True)
+    return len(tracked)
+
+
+def load_series_hist_from_db(as_of: dt.date) -> dict[tuple, dict[dt.date, float]]:
+    """Load market history from daily_prices for the 180d lookback window."""
+    start = as_of - dt.timedelta(days=WINDOW_DAYS)
+    series_hist: dict[tuple, dict[dt.date, float]] = {}
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("set statement_timeout = 0;")
+            cur.execute(
+                """
+                select product_id, sub_type, date, market
+                from daily_prices
+                where date >= %s and date <= %s and market is not null
+                """,
+                (start, as_of),
+            )
+            for pid, sub, d, market in cur:
+                series_hist.setdefault((int(pid), str(sub)), {})[d] = float(market)
+    print(
+        f"[windows] loaded {len(series_hist)} series from daily_prices "
+        f"({start}..{as_of})",
+        flush=True,
+    )
+    return series_hist
+
+
+def recompute_windows_from_db(as_of: dt.date, today_rows: list[tuple]) -> int:
+    """Rewrite price_windows from DB history + today's full archive markets."""
+    series_hist = load_series_hist_from_db(as_of)
+    for pid, sub, _low, _mid, _high, market, _dlow in today_rows:
+        if market is not None:
+            series_hist.setdefault((pid, sub), {})[as_of] = float(market)
+
+    print(f"[windows] computing for {len(series_hist)} series...", flush=True)
+    wrows = compute_windows(series_hist, as_of)
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("set statement_timeout = 0;")
+            cur.execute("truncate table price_windows;")
+            with cur.copy(
+                """copy price_windows
+                   (product_id, sub_type, as_of, market, chg_7d_pct, chg_30d_pct,
+                    chg_90d_pct, chg_180d_pct, market_7d_ago, market_30d_ago,
+                    market_90d_ago, market_180d_ago, high_180d, low_180d,
+                    avg_market_30d, volatility_30d, data_points) from stdin"""
+            ) as cp:
+                for r in wrows:
+                    cp.write_row(r)
+        conn.commit()
+    print(f"[windows] price_windows rewritten: {len(wrows)} rows", flush=True)
+    return len(wrows)
+
+
+def ingest_incremental(explicit_date: dt.date | None, min_market: float) -> None:
+    """Download one day, upsert daily_prices, recompute windows from DB."""
+    tmp: Path | None = None
+    try:
+        tmp = Path(tempfile.mkdtemp(prefix="tcgcsv_inc_"))
+        as_of, path = resolve_archive_day(explicit_date, dest_dir=tmp)
+        # If we used a local ARCHIVE_DIR cache, path may be outside tmp — that's fine.
+        print(f"[prices] incremental as_of={as_of} | min_market={min_market}", flush=True)
+        rows = parse_archive(path)
+        print(f"[prices] parsed {len(rows)} price rows from archive", flush=True)
+
+        upserted = upsert_day(as_of, rows, min_market)
+        windows = recompute_windows_from_db(as_of, rows)
+
+        with get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "insert into ingest_runs (kind, finished_at, status, rows, detail) "
+                    "values ('prices', now(), 'ok', %s, %s)",
+                    (
+                        upserted + windows,
+                        json.dumps(
+                            {
+                                "mode": "incremental",
+                                "as_of": str(as_of),
+                                "daily_rows": upserted,
+                                "windows": windows,
+                                "min_market": min_market,
+                            }
+                        ),
+                    ),
+                )
+            conn.commit()
+
+        compute_movement()
+        print("[prices] incremental done.", flush=True)
+    finally:
+        if tmp is not None:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--daily-days", default="365", help="days of daily history to store, or 'all'")
     ap.add_argument("--min-market", type=float, default=2.0, help="min latest market to store daily")
     ap.add_argument("--workers", type=int, default=12)
     ap.add_argument("--windows-only", action="store_true", help="rewrite price_windows only")
+    ap.add_argument(
+        "--incremental",
+        action="store_true",
+        help="download one day from tcgcsv, upsert daily_prices, recompute windows from DB",
+    )
+    ap.add_argument(
+        "--date",
+        type=str,
+        default=None,
+        help="with --incremental: YYYY-MM-DD archive date (default: today, else yesterday)",
+    )
     a = ap.parse_args()
     if a.windows_only:
         recompute_windows_only(a.workers)
+        return
+    if a.incremental:
+        explicit = dt.date.fromisoformat(a.date) if a.date else None
+        ingest_incremental(explicit, a.min_market)
         return
     daily_days = None if str(a.daily_days).lower() == "all" else int(a.daily_days)
     ingest_prices(daily_days, a.min_market, a.workers)

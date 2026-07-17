@@ -144,7 +144,8 @@ uv pip install --python pipeline/.venv/bin/python -r pipeline/requirements.txt
 
 pipeline/.venv/bin/python -m pipeline.db apply-schema   # create tables
 pipeline/.venv/bin/python -m pipeline.catalog           # 216 sets, 32k products
-pipeline/.venv/bin/python -m pipeline.prices            # daily prices + windows
+pipeline/.venv/bin/python -m pipeline.prices            # full backfill: daily prices + windows
+pipeline/.venv/bin/python -m pipeline.prices --incremental  # one-day upsert (same as GHA)
 ```
 
 ### 3. Enrich demo cards + memory (live Bright Data + Featherless)
@@ -165,7 +166,15 @@ npm run dev                          # in one terminal
 node scripts/scan-watchlist.mjs      # scans watchlist, prints posts + transcript status
 ```
 
-Crons (configured in [`vercel.json`](vercel.json)):
+**tcgcsv prices** (not Vercel — free GitHub Actions):
+
+| Workflow | Schedule | Job |
+|----------|----------|-----|
+| [`tcgcsv-daily`](.github/workflows/tcgcsv-daily.yml) | daily 21:30 UTC + manual | Catalog refresh + `pipeline.prices --incremental` |
+
+Add repo secret `PIPELINE_DB_URL` (Supabase **session** pooler, port **5432**). Public-repo Actions minutes are free. Incremental mode appends one day; it does not replace a one-time local full backfill.
+
+**Social / signals** (configured in [`vercel.json`](vercel.json)):
 
 | Route | Schedule (Hobby) | Pro cadence | Job |
 |-------|------------------|-------------|-----|
