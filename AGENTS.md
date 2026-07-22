@@ -88,6 +88,7 @@ scripts/
 - **Env var**: `SUPABASE_DB_URL` (transaction pooler, port 6543 on Vercel; direct 5432 locally). Fallback: `DATABASE_URL`.
 - **All queries** live in `src/lib/queries.ts`. Add new queries there, not inline in components.
 - **Schema** is in `supabase/schema.sql`. If you modify the schema, update that file and document the change.
+- **Data API lockdown**: The warehouse is server-only Postgres. `anon` / `authenticated` must stay revoked on `public` tables; RLS is enabled with **no** open anon/authenticated policies. Do not grant Data API access or add public RLS policies. Prefer disabling the Supabase Data API in the project dashboard.
 
 ### Core tables
 
@@ -142,6 +143,7 @@ FEATHERLESS_MODEL        # optional — any OpenAI-compatible model ID
 - Do not add `"use client"` to files that touch the database
 - Do not use `fetch` to call the Supabase REST API — use the `sql` template tag directly
 - Do not create Supabase client objects (`createClient`) — this project uses direct Postgres via `postgres`
+- Do not grant `anon` / `authenticated` privileges or add open Data API RLS policies on warehouse tables
 - Do not add `console.log` in Server Components or Route Handlers for production code
 - Do not modify `supabase/schema.sql` without also confirming the pipeline and queries still align
 - Do not use relative imports — use `@/lib/...` aliases

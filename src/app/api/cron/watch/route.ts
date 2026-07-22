@@ -1,23 +1,18 @@
 import { NextResponse } from "next/server";
+import { authorizeCron } from "@/lib/cron-auth";
 import { runWatcher } from "@/lib/watcher";
 
 export const maxDuration = 300;
 
 /**
  * Vercel Cron entrypoint for the live trigger engine.
- * Configured in vercel.ts to run on a schedule. Vercel sends
- * `Authorization: Bearer $CRON_SECRET`; we verify it when set.
+ * Configured in vercel.json to run on a schedule. Vercel sends
+ * `Authorization: Bearer $CRON_SECRET`; fail-closed in production if unset.
  *
  * Query: ?discover=1 to also run a fresh Bright Data creator scan (costs credits).
  */
-function authorized(req: Request): boolean {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return true; // unprotected if no secret configured (local/dev)
-  return req.headers.get("authorization") === `Bearer ${secret}`;
-}
-
 export async function GET(req: Request) {
-  if (!authorized(req)) {
+  if (!authorizeCron(req)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
   const discover = new URL(req.url).searchParams.get("discover") === "1";

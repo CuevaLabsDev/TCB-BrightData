@@ -2,8 +2,12 @@ import { generateText, convertToModelMessages, stepCountIs, type UIMessage } fro
 import { getAgentModel, getMaxOutputTokens, hasFeatherless } from "@/lib/agent/featherless";
 import { SYSTEM_PROMPT } from "@/lib/agent/system-prompt";
 import { agentTools } from "@/lib/agent/tools";
+import { rateLimit } from "@/lib/rate-limit";
 
 export const maxDuration = 120;
+
+const AGENT_LIMIT = 20;
+const AGENT_WINDOW_MS = 10 * 60 * 1000;
 
 const MAX_TOOL_STEPS = 5;
 const STORED_AGENT_TOOLS = [
@@ -44,6 +48,10 @@ function wantsLiveBrightData(messages: UIMessage[]) {
  * Returns: { text, toolsUsed, steps } consumed by the chat UI.
  */
 export async function POST(req: Request) {
+  if (!rateLimit(req, "agent", { limit: AGENT_LIMIT, windowMs: AGENT_WINDOW_MS })) {
+    return Response.json({ error: "rate limit exceeded" }, { status: 429 });
+  }
+
   if (!hasFeatherless()) {
     return Response.json(
       { error: "FEATHERLESS_API_KEY is not configured." },

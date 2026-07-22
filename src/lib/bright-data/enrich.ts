@@ -156,8 +156,11 @@ export async function enrichGraded(
   const raw = card.market;
   const out: GradedResult[] = [];
 
-  for (const grade of grades) {
-    const scan = await scanGradedSold(q, grade);
+  const scans = await Promise.all(
+    grades.map(async (grade) => ({ grade, scan: await scanGradedSold(q, grade) })),
+  );
+
+  for (const { grade, scan } of scans) {
     if (scan.count === 0) continue;
     const gradeMultiple =
       raw && scan.median ? Math.round((scan.median / raw) * 100) / 100 : null;

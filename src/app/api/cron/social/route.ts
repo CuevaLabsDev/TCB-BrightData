@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { sql } from "@/lib/db";
 import { hasBrightData } from "@/lib/bright-data/client";
 import { scanWatchlist, correlateCreatorImpact } from "@/lib/bright-data/social";
+import { authorizeCron } from "@/lib/cron-auth";
 import { appendMarketMemoryBatch } from "@/lib/memory/incremental";
 import { runWatcher } from "@/lib/watcher";
 
@@ -11,16 +12,10 @@ export const maxDuration = 300;
  * Full watchlist scan — every 4h (see vercel.json). Account-scoped Bright Data
  * pulls for ALL active watchlist creators (the backstop behind the tier1
  * Triggerware pulse), then impact correlation, incremental memory, and a signal
- * pass. Vercel sends `Authorization: Bearer $CRON_SECRET`; verified when set.
+ * pass. Vercel sends `Authorization: Bearer $CRON_SECRET`; fail-closed in production.
  */
-function authorized(req: Request): boolean {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return true; // unprotected if no secret configured (local/dev)
-  return req.headers.get("authorization") === `Bearer ${secret}`;
-}
-
 export async function GET(req: Request) {
-  if (!authorized(req)) {
+  if (!authorizeCron(req)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
   if (!hasBrightData()) {

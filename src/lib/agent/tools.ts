@@ -488,8 +488,10 @@ export const agentTools = {
       if (!hasBrightData()) return { error: "Bright Data not configured" };
       const card = await resolveCard(query, productId);
       if (!card) return { found: false };
-      const liquidity = await enrichLiquidity(card);
-      const graded = includeGraded ? await enrichGraded(card) : [];
+      const [liquidity, graded] = await Promise.all([
+        enrichLiquidity(card),
+        includeGraded ? enrichGraded(card) : Promise.resolve([]),
+      ]);
       return {
         found: true,
         card: card.name,

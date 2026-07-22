@@ -2,8 +2,12 @@ import { NextResponse } from "next/server";
 import { getCard } from "@/lib/queries";
 import { hasBrightData } from "@/lib/bright-data/client";
 import { enrichGraded, enrichLiquidity } from "@/lib/bright-data/enrich";
+import { rateLimit } from "@/lib/rate-limit";
 
 export const maxDuration = 120;
+
+const ENRICH_LIMIT = 8;
+const ENRICH_WINDOW_MS = 10 * 60 * 1000;
 
 /**
  * POST /api/enrich
@@ -14,6 +18,10 @@ export const maxDuration = 120;
  * page "Refresh live" action, the seed script, and the cron watcher.
  */
 export async function POST(req: Request) {
+  if (!rateLimit(req, "enrich", { limit: ENRICH_LIMIT, windowMs: ENRICH_WINDOW_MS })) {
+    return NextResponse.json({ error: "rate limit exceeded" }, { status: 429 });
+  }
+
   if (!hasBrightData()) {
     return NextResponse.json(
       { error: "BRIGHT_DATA_API_KEY not configured" },
@@ -39,8 +47,10 @@ export async function POST(req: Request) {
   }
 
   try {
-    const liquidity = await enrichLiquidity(card);
-    const graded = body.graded === false ? [] : await enrichGraded(card);
+    const [liquidity, graded] = await Promise.all([
+      enrichLiquidity(card),
+      body.graded === false ? Promise.resolve([]) : enrichGraded(card),
+    ]);
     return NextResponse.json({
       card: { productId: card.productId, name: card.name, subType: card.subType },
       liquidity: {

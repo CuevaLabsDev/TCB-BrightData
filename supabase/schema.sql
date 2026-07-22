@@ -341,3 +341,38 @@ create table if not exists social_price_corr (
 );
 create index if not exists social_price_corr_product_idx on social_price_corr (product_id);
 create index if not exists social_price_corr_strength_idx on social_price_corr (corr_strength desc);
+
+-- ---------------------------------------------------------------------------
+-- Data API lockdown — warehouse is server-only via SUPABASE_DB_URL / PIPELINE_DB_URL.
+-- Revoke PostgREST roles; enable RLS with no anon/authenticated policies.
+-- Do not add open TO anon / TO authenticated policies.
+-- ---------------------------------------------------------------------------
+
+revoke all on all tables in schema public from anon, authenticated;
+revoke all on all sequences in schema public from anon, authenticated;
+revoke all on all routines in schema public from anon, authenticated;
+
+alter default privileges for role postgres in schema public
+  revoke all on tables from anon, authenticated;
+alter default privileges for role postgres in schema public
+  revoke all on sequences from anon, authenticated;
+alter default privileges for role postgres in schema public
+  revoke all on routines from anon, authenticated;
+
+alter table groups enable row level security;
+alter table products enable row level security;
+alter table daily_prices enable row level security;
+alter table price_windows enable row level security;
+alter table liquidity enable row level security;
+alter table graded_comps enable row level security;
+alter table creators enable row level security;
+alter table posts enable row level security;
+alter table signals enable row level security;
+alter table market_memory enable row level security;
+alter table ingest_runs enable row level security;
+alter table reddit_threads enable row level security;
+alter table reddit_comments enable row level security;
+alter table reddit_mentions enable row level security;
+alter table reddit_card_daily enable row level security;
+alter table ebay_sold_daily enable row level security;
+alter table social_price_corr enable row level security;

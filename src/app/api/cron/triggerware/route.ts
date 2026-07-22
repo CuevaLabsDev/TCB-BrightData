@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { sql } from "@/lib/db";
 import { hasBrightData } from "@/lib/bright-data/client";
 import { scanWatchlist, correlateCreatorImpact } from "@/lib/bright-data/social";
+import { authorizeCron } from "@/lib/cron-auth";
 import { appendMarketMemoryBatch } from "@/lib/memory/incremental";
 import { runWatcher } from "@/lib/watcher";
 import { tier1Watchlist } from "@/lib/social/watchlist";
@@ -14,15 +15,10 @@ export const maxDuration = 300;
  * tier1 creator; any creator with a fresh delta gets a targeted Bright Data
  * scrape (NOT the whole watchlist), keeping the pulse cheap. New posts feed
  * incremental memory + the signal pass. The 4h /api/cron/social is the backstop.
+ * Requires CRON_SECRET in production (fail-closed).
  */
-function authorized(req: Request): boolean {
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return true;
-  return req.headers.get("authorization") === `Bearer ${secret}`;
-}
-
 export async function GET(req: Request) {
-  if (!authorized(req)) {
+  if (!authorizeCron(req)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
   if (!hasTriggerware()) {
