@@ -67,7 +67,7 @@ export interface LiquidityResult {
 export async function enrichLiquidity(card: CardSummary): Promise<LiquidityResult> {
   const [details, listingsData, salesSeries] = await Promise.all([
     getTcgDetails(card.productId),
-    getTcgListings(card.productId, 2),
+    getTcgListings(card.productId, 1),
     getTcgSalesHistory(card.productId, "quarter"),
   ]);
 

@@ -64,10 +64,13 @@ const n = (v: unknown): number | null => {
   return Number.isFinite(x) ? x : null;
 };
 
+/** Soft JSON targets — fail faster than the default 60s HTML Unlocker budget. */
+const TCG_TIMEOUT_MS = 35_000;
+
 export async function getTcgDetails(productId: number): Promise<TcgDetails | null> {
   const text = await unlockerRequest(
     `https://${LISTINGS_HOST}/v2/product/${productId}/details`,
-    { method: "GET", headers: tcgHeaders(productId) },
+    { method: "GET", headers: tcgHeaders(productId), timeoutMs: TCG_TIMEOUT_MS },
   );
   let j: Record<string, unknown>;
   try {
@@ -105,7 +108,7 @@ function listingsBody(from: number, size: number): string {
 
 export async function getTcgListings(
   productId: number,
-  maxPages = 2,
+  maxPages = 1,
 ): Promise<{ total: number; listings: TcgListing[] }> {
   const size = 25;
   const all: TcgListing[] = [];
@@ -114,7 +117,12 @@ export async function getTcgListings(
   for (let page = 0; page < maxPages; page++) {
     const text = await unlockerRequest(
       `https://${LISTINGS_HOST}/v1/product/${productId}/listings`,
-      { method: "POST", body: listingsBody(page * size, size), headers: tcgHeaders(productId) },
+      {
+        method: "POST",
+        body: listingsBody(page * size, size),
+        headers: tcgHeaders(productId),
+        timeoutMs: TCG_TIMEOUT_MS,
+      },
     );
     let inner: Record<string, unknown>;
     try {
@@ -154,7 +162,7 @@ export async function getTcgSalesHistory(
 ): Promise<TcgSalesSeries[]> {
   const text = await unlockerRequest(
     `https://${HISTORY_HOST}/price/history/${productId}/detailed?range=${range}`,
-    { method: "GET", headers: tcgHeaders(productId) },
+    { method: "GET", headers: tcgHeaders(productId), timeoutMs: TCG_TIMEOUT_MS },
   );
   let result: Record<string, unknown>[];
   try {
