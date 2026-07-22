@@ -42,6 +42,8 @@ export interface RawRequestOpts {
   /** Custom headers forwarded to the target URL. */
   headers?: Record<string, string>;
   timeoutMs?: number;
+  /** Unlocker `data_format` (e.g. markdown). Omit for full HTML. */
+  dataFormat?: string;
 }
 
 async function rawRequest(
@@ -61,6 +63,7 @@ async function rawRequest(
   if (opts.method) payload.method = opts.method;
   if (opts.body) payload.body = opts.body;
   if (opts.headers) payload.headers = opts.headers;
+  if (opts.dataFormat) payload.data_format = opts.dataFormat;
 
   const res = await fetch(BRIGHT_DATA_API, {
     method: "POST",
@@ -109,8 +112,15 @@ export async function serpSearch(
 }
 
 /** Fetch a bot-protected page's HTML via Web Unlocker. */
-export async function unlockPage(url: string, country = "us"): Promise<string> {
-  return rawRequest(unlockerZone(), url, { format: "raw", country });
+export async function unlockPage(
+  url: string,
+  opts: { country?: string; timeoutMs?: number } = {},
+): Promise<string> {
+  return rawRequest(unlockerZone(), url, {
+    format: "raw",
+    country: opts.country ?? "us",
+    timeoutMs: opts.timeoutMs,
+  });
 }
 
 /**

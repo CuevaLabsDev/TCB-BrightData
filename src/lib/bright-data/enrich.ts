@@ -147,20 +147,34 @@ export interface GradedResult {
   gradeMultiple: number | null;
 }
 
-/** Live PSA-graded comps for a card, persisted to `graded_comps`. */
+/**
+ * Live PSA-graded comps for a card, persisted to `graded_comps`.
+ *
+ * Sealed product (ETB / case / booster box) is skipped — PSA grades apply to
+ * singles. Searching eBay for "… Case PSA 10" returns fuzzy unrelated singles
+ * and used to get stored as comps.
+ *
+ * Grades are fetched **sequentially** on purpose: two parallel eBay Unlocker
+ * HTML calls contend on the same zone and often make wall-clock *worse*
+ * (measured ~39s parallel vs ~21s for a single PSA-10). Live refresh should
+ * pass `[10]` only; use `[10, 9]` for full backfills / agent deep scans.
+ */
 export async function enrichGraded(
   card: CardSummary,
   grades: number[] = [10, 9],
 ): Promise<GradedResult[]> {
+  if (card.isSealed) {
+    // Drop any prior bogus rows from before the sealed skip.
+    await sql`delete from graded_comps where product_id = ${card.productId}`;
+    return [];
+  }
+
   const q = cardQueryString(card);
   const raw = card.market;
   const out: GradedResult[] = [];
 
-  const scans = await Promise.all(
-    grades.map(async (grade) => ({ grade, scan: await scanGradedSold(q, grade) })),
-  );
-
-  for (const { grade, scan } of scans) {
+  for (const grade of grades) {
+    const scan = await scanGradedSold(q, grade);
     if (scan.count === 0) continue;
     const gradeMultiple =
       raw && scan.median ? Math.round((scan.median / raw) * 100) / 100 : null;

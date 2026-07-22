@@ -230,6 +230,7 @@ export async function runWatcher(opts: { discover?: boolean } = {}): Promise<Wat
     join products p on p.product_id = gc.product_id
     left join liquidity l on l.product_id = gc.product_id
     where gc.grade = 10 and gc.grade_multiple >= 2.5
+      and not p.is_sealed
     order by gc.product_id, gc.as_of desc
   `;
   for (const a of arbs) {

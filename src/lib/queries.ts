@@ -421,6 +421,7 @@ export async function getGradeArbitrageBoard(limit = 12): Promise<GradeArbRow[]>
     left join groups g on g.group_id = p.group_id
     left join liquidity l on l.product_id = gc.product_id
     where gc.grade = 10 and gc.grade_multiple is not null
+      and not p.is_sealed
     order by gc.product_id, gc.as_of desc
   `;
   return rows

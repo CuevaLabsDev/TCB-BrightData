@@ -35,7 +35,15 @@ export function RefreshLiveButton({ productId, subType }: { productId: number; s
       const res = await fetch("/api/enrich", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ productId, subType, force: true }),
+        // Force live TCG liquidity. Reuse warehouse graded (6h) when possible;
+        // on a miss only PSA-10 is scraped (one Unlocker call, no zone contention).
+        body: JSON.stringify({
+          productId,
+          subType,
+          force: true,
+          forceGraded: false,
+          grades: [10],
+        }),
       });
 
       if (!res.ok) {

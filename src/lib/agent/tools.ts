@@ -490,11 +490,13 @@ export const agentTools = {
       if (!card) return { found: false };
       const [liquidity, graded] = await Promise.all([
         enrichLiquidity(card),
+        // enrichGraded no-ops + clears warehouse rows for sealed products
         includeGraded ? enrichGraded(card) : Promise.resolve([]),
       ]);
       return {
         found: true,
         card: card.name,
+        isSealed: card.isSealed,
         live: {
           liquidityScore: liquidity.score,
           activeListings: liquidity.activeListings,
@@ -507,6 +509,9 @@ export const agentTools = {
             sampleSize: g.scan.count,
             gradeMultiple: g.gradeMultiple,
           })),
+          ...(card.isSealed
+            ? { gradedNote: "Sealed product — PSA grade comps skipped" }
+            : {}),
         },
       };
     },

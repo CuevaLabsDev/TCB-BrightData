@@ -143,7 +143,11 @@ export default async function CardPage({
             subtitle="eBay realized sold comps via Bright Data"
             right={<Gem className="h-4 w-4 text-violet-400" />}
           />
-          {graded.length === 0 ? (
+          {card.isSealed ? (
+            <p className="py-8 text-center text-sm text-zinc-600">
+              PSA grade comps apply to singles — sealed product, not graded.
+            </p>
+          ) : graded.length === 0 ? (
             <p className="py-8 text-center text-sm text-zinc-600">
               No graded comps yet — hit “Refresh live” to scrape eBay PSA sales.
             </p>

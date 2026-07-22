@@ -8,20 +8,34 @@ export const maxDuration = 120;
 
 const ENRICH_LIMIT = 8;
 const ENRICH_WINDOW_MS = 10 * 60 * 1000;
-const FRESH_MS = 60 * 60 * 1000;
+/** Liquidity moves fast — short TTL when force is false. */
+const LIQUIDITY_FRESH_MS = 60 * 60 * 1000;
+/**
+ * Graded multiples move slowly. Even on a forced live refresh we reuse warehouse
+ * PSA comps inside this window so the button isn't blocked on eBay HTML.
+ */
+const GRADED_FRESH_MS = 6 * 60 * 60 * 1000;
 
 /**
  * POST /api/enrich
- * body: { productId: number, subType?: string, graded?: boolean, force?: boolean }
+ * body: {
+ *   productId: number,
+ *   subType?: string,
+ *   graded?: boolean,          // false skips graded entirely
+ *   force?: boolean,           // force live TCGplayer liquidity
+ *   forceGraded?: boolean,     // force live eBay (default false)
+ *   grades?: number[],         // default [10] for live; [10,9] for full
+ * }
  *
- * Streams NDJSON events so the UI can paint liquidity before graded comps finish:
+ * Streams NDJSON:
  *   { type: "liquidity", cached?, card, liquidity }
  *   { type: "graded", cached?, graded }
  *   { type: "done" }
  *   { type: "error", error }
  *
- * When force is false (default) and warehouse as_of is within 1h, that half skips
- * Unlocker and emits a cached snapshot. Refresh live always sends force: true.
+ * Live refresh sends force:true + forceGraded:false so liquidity is always
+ * fresh while graded uses the 6h warehouse cache (or a single PSA-10 Unlocker
+ * call when stale). Dual parallel eBay Unlocker calls contend on the zone.
  */
 export async function POST(req: Request) {
   if (!rateLimit(req, "enrich", { limit: ENRICH_LIMIT, windowMs: ENRICH_WINDOW_MS })) {
@@ -40,6 +54,8 @@ export async function POST(req: Request) {
     subType?: string;
     graded?: boolean;
     force?: boolean;
+    forceGraded?: boolean;
+    grades?: number[];
   };
   try {
     body = await req.json();
@@ -58,7 +74,13 @@ export async function POST(req: Request) {
   }
 
   const force = body.force === true;
-  const wantGraded = body.graded !== false;
+  const forceGraded = body.forceGraded === true;
+  // Sealed products (ETB/case/box) have no PSA singles comps.
+  const wantGraded = body.graded !== false && !card.isSealed;
+  const grades =
+    Array.isArray(body.grades) && body.grades.length > 0
+      ? body.grades.filter((g) => Number.isFinite(g)).map(Number)
+      : [10];
   const cardPayload = {
     productId: card.productId,
     name: card.name,
@@ -82,12 +104,16 @@ export async function POST(req: Request) {
           storedLiq.find((l) => l.subType === card.subType && l.source === "tcgplayer") ??
           storedLiq.find((l) => l.subType === card.subType) ??
           storedLiq[0];
-        const liqFresh = !force && isFresh(liqRow?.asOf);
+        const liqFresh = !force && isFresh(liqRow?.asOf, LIQUIDITY_FRESH_MS);
+
+        // Prefer warehouse graded unless forceGraded. Require a fresh PSA-10
+        // (or whatever the highest requested grade is) inside GRADED_FRESH_MS.
+        const primaryGrade = Math.max(...grades);
+        const primaryStored = storedGraded.find((g) => g.grade === primaryGrade);
         const gradedFresh =
-          !force &&
+          !forceGraded &&
           wantGraded &&
-          storedGraded.length > 0 &&
-          storedGraded.every((g) => isFresh(g.asOf));
+          isFresh(primaryStored?.asOf, GRADED_FRESH_MS);
 
         const tasks: Promise<void>[] = [];
 
@@ -119,8 +145,14 @@ export async function POST(req: Request) {
         }
 
         if (!wantGraded) {
+          // Sealed: clear any prior bogus PSA rows, then return empty.
+          if (card.isSealed) {
+            await enrichGraded(card, []);
+          }
           send({ type: "graded", cached: true, graded: [] });
         } else if (gradedFresh) {
+          // Return all stored grades we have (9+10) so the UI stays rich even
+          // when live only refreshes PSA-10 on a miss.
           send({
             type: "graded",
             cached: true,
@@ -128,16 +160,25 @@ export async function POST(req: Request) {
           });
         } else {
           tasks.push(
-            enrichGraded(card).then((graded) => {
-              send({
-                type: "graded",
-                cached: false,
-                graded: graded.map((g) => ({
+            enrichGraded(card, grades).then((graded) => {
+              // Merge live rows with any still-fresh warehouse grades we didn't
+              // re-scrape (e.g. live PSA-10 + cached PSA-9).
+              const liveGrades = new Set(graded.map((g) => g.grade));
+              const merged = [
+                ...graded.map((g) => ({
                   grade: g.grade,
                   median: g.scan.median,
                   sampleSize: g.scan.count,
                   gradeMultiple: g.gradeMultiple,
                 })),
+                ...storedGraded
+                  .filter((g) => !liveGrades.has(g.grade))
+                  .map(mapStoredGraded),
+              ].sort((a, b) => b.grade - a.grade);
+              send({
+                type: "graded",
+                cached: false,
+                graded: merged,
               });
             }),
           );
@@ -164,11 +205,11 @@ export async function POST(req: Request) {
   });
 }
 
-function isFresh(asOf: string | null | undefined): boolean {
+function isFresh(asOf: string | null | undefined, windowMs: number): boolean {
   if (!asOf) return false;
   const t = Date.parse(asOf);
   if (!Number.isFinite(t)) return false;
-  return Date.now() - t < FRESH_MS;
+  return Date.now() - t < windowMs;
 }
 
 function mapStoredLiquidity(liq: Liquidity) {
