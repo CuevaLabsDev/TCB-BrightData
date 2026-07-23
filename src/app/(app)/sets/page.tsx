@@ -6,7 +6,7 @@ import { changeColor, formatCurrency, formatNumber, formatPercent } from "@/lib/
 export const dynamic = "force-dynamic";
 
 export default async function SetsPage() {
-  const sets = await getSets(80);
+  const sets = await getSets();
 
   return (
     <div className="space-y-6">

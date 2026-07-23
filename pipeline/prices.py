@@ -530,19 +530,30 @@ def recompute_windows_from_db(as_of: dt.date, today_rows: list[tuple]) -> int:
     return len(wrows)
 
 
-def ingest_incremental(explicit_date: dt.date | None, min_market: float) -> None:
-    """Download one day, upsert daily_prices, recompute windows from DB."""
+def ingest_incremental(
+    explicit_date: dt.date | None,
+    min_market: float,
+    *,
+    skip_windows: bool = False,
+) -> None:
+    """Download one day, upsert daily_prices, optionally recompute windows from DB."""
     tmp: Path | None = None
     try:
         tmp = Path(tempfile.mkdtemp(prefix="tcgcsv_inc_"))
         as_of, path = resolve_archive_day(explicit_date, dest_dir=tmp)
         # If we used a local ARCHIVE_DIR cache, path may be outside tmp — that's fine.
-        print(f"[prices] incremental as_of={as_of} | min_market={min_market}", flush=True)
+        print(
+            f"[prices] incremental as_of={as_of} | min_market={min_market}"
+            f"{' | skip_windows' if skip_windows else ''}",
+            flush=True,
+        )
         rows = parse_archive(path)
         print(f"[prices] parsed {len(rows)} price rows from archive", flush=True)
 
         upserted = upsert_day(as_of, rows, min_market)
-        windows = recompute_windows_from_db(as_of, rows)
+        windows = 0
+        if not skip_windows:
+            windows = recompute_windows_from_db(as_of, rows)
 
         with get_conn() as conn:
             with conn.cursor() as cur:
@@ -558,13 +569,15 @@ def ingest_incremental(explicit_date: dt.date | None, min_market: float) -> None
                                 "daily_rows": upserted,
                                 "windows": windows,
                                 "min_market": min_market,
+                                "skip_windows": skip_windows,
                             }
                         ),
                     ),
                 )
             conn.commit()
 
-        compute_movement()
+        if not skip_windows:
+            compute_movement()
         print("[prices] incremental done.", flush=True)
     finally:
         if tmp is not None:
@@ -588,13 +601,18 @@ def main():
         default=None,
         help="with --incremental: YYYY-MM-DD archive date (default: today, else yesterday)",
     )
+    ap.add_argument(
+        "--skip-windows",
+        action="store_true",
+        help="with --incremental: upsert daily_prices only (skip price_windows + movement)",
+    )
     a = ap.parse_args()
     if a.windows_only:
         recompute_windows_only(a.workers)
         return
     if a.incremental:
         explicit = dt.date.fromisoformat(a.date) if a.date else None
-        ingest_incremental(explicit, a.min_market)
+        ingest_incremental(explicit, a.min_market, skip_windows=a.skip_windows)
         return
     daily_days = None if str(a.daily_days).lower() == "all" else int(a.daily_days)
     ingest_prices(daily_days, a.min_market, a.workers)

@@ -223,7 +223,7 @@ export async function getPriceHistory(
   }));
 }
 
-export async function getSets(limit = 60): Promise<SetSummary[]> {
+export async function getSets(): Promise<SetSummary[]> {
   const rows = await sql`
     select g.group_id, g.name, g.abbreviation, g.published_on,
       count(distinct w.product_id)::int card_count,
@@ -236,7 +236,6 @@ export async function getSets(limit = 60): Promise<SetSummary[]> {
     where w.market is not null
     group by g.group_id, g.name, g.abbreviation, g.published_on
     order by total_market desc nulls last
-    limit ${limit}
   `;
   return rows.map((r) => ({
     groupId: Number(r.group_id),
