@@ -234,6 +234,7 @@ export default async function CardPage({
               <div className="grid grid-cols-2 gap-3 text-sm">
                 <Metric label="Sold velocity" value={`${liq.soldVelocity?.toFixed(2) ?? "—"}/day`} />
                 <Metric label="Active listings" value={formatNumber(liq.activeListings)} />
+                <Metric label="Available qty" value={formatNumber(liq.totalQuantity)} />
                 <Metric label="Sold (90d)" value={formatNumber(liq.totalQtySold90d)} />
                 <Metric
                   label="Bid/ask spread"
