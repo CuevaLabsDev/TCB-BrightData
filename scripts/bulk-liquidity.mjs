@@ -261,16 +261,20 @@ async function tcgDetails(pid) {
   }
 }
 
-async function tcgListings(pid) {
+async function tcgListings(pid, printing) {
   let total = 0;
   let qty = 0;
   let lowest = null;
   let fetched = 0;
+  const sellers = new Set();
 
   for (let page = 0; page < LISTINGS_MAX_PAGES; page++) {
+    const term = { sellerStatus: "Live" };
+    // Warehouse sub_type === TCG printing (Normal, Holofoil, Reverse Holofoil, …).
+    if (printing) term.printing = printing;
     const body = JSON.stringify({
       filters: {
-        term: { sellerStatus: "Live" },
+        term,
         range: { quantity: { gte: 1 } },
         exclude: { channelExclusion: 0 },
       },
@@ -293,13 +297,23 @@ async function tcgListings(pid) {
       break;
     }
     if (page === 0 && batch.length) lowest = n(batch[0].price);
-    for (const l of batch) qty += n(l.quantity) || 0;
+    for (const l of batch) {
+      qty += n(l.quantity) || 0;
+      if (l.sellerName) sellers.add(l.sellerName);
+    }
     fetched += batch.length;
     if (batch.length < LISTINGS_PAGE_SIZE) break;
     if (total > 0 && fetched >= total) break;
   }
 
-  return { total: total || fetched, qty, lowest, pages: Math.ceil(fetched / LISTINGS_PAGE_SIZE) || 0 };
+  return {
+    total: total || fetched,
+    qty,
+    lowest,
+    sellers: sellers.size,
+    pages: Math.ceil(fetched / LISTINGS_PAGE_SIZE) || 0,
+    printing: printing || null,
+  };
 }
 
 async function tcgSales(pid) {
@@ -314,11 +328,17 @@ async function tcgSales(pid) {
   }
 }
 
-function aggVelocity(series, weeks = 13) {
+function aggVelocity(series, weeks = 13, variant) {
   let qty = 0,
     txns = 0;
   const seen = new Set();
-  for (const s of series) {
+  const filtered =
+    variant != null && variant !== ""
+      ? series.filter(
+          (s) => String(s.variant || "").toLowerCase() === String(variant).toLowerCase(),
+        )
+      : series;
+  for (const s of filtered) {
     for (const b of (s.buckets || []).slice(0, weeks)) {
       qty += n(b.quantitySold) || 0;
       txns += n(b.transactionCount) || 0;
@@ -388,18 +408,19 @@ async function enrichOne(row) {
   const prior = await priorSnapshot(pid, subType);
 
   const jobs = [tcgDetails(pid), tcgSales(pid)];
-  if (INCLUDE_LISTINGS) jobs.push(tcgListings(pid));
+  if (INCLUDE_LISTINGS) jobs.push(tcgListings(pid, subType));
   const results = await Promise.all(jobs);
   const details = results[0];
   const series = results[1];
   const listings = INCLUDE_LISTINGS ? results[2] : null;
 
-  const vel = aggVelocity(series, 13);
-  const activeListings = details?.totalListings ?? listings?.total ?? 0;
+  const vel = aggVelocity(series, 13, subType);
+  // Listing stats are printing-scoped; details API is product-wide — prefer listings.
+  const activeListings = listings?.total ?? details?.totalListings ?? 0;
   const totalQuantity = listings?.qty ?? null;
-  const sellers = details?.totalSellers ?? 0;
-  const market = details?.marketPrice ?? n(row.market);
-  const lowestAsk = details?.lowestPrice ?? listings?.lowest ?? null;
+  const sellers = listings?.sellers ?? details?.totalSellers ?? 0;
+  const market = n(row.market) ?? details?.marketPrice;
+  const lowestAsk = listings?.lowest ?? details?.lowestPrice ?? null;
   const bidAskSpreadPct =
     lowestAsk !== null && market
       ? Math.round(((lowestAsk - market) / market) * 1000) / 10
@@ -445,6 +466,7 @@ async function enrichOne(row) {
          name: row.name,
          mode: MODE,
          endpoints: ENDPOINTS,
+         printing: subType,
          listingsPages: listings?.pages ?? null,
          listingRowsFetched: listings?.total ?? null,
          totalQuantity: totalQuantity,

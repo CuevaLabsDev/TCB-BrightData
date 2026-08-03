@@ -91,10 +91,17 @@ export async function getTcgDetails(productId: number): Promise<TcgDetails | nul
   };
 }
 
-function listingsBody(from: number, size: number): string {
+function listingsBody(
+  from: number,
+  size: number,
+  printing?: string,
+): string {
+  const term: Record<string, string> = { sellerStatus: "Live" };
+  // TCGplayer `printing` matches warehouse `sub_type` (Normal, Holofoil, …).
+  if (printing) term.printing = printing;
   return JSON.stringify({
     filters: {
-      term: { sellerStatus: "Live" },
+      term,
       range: { quantity: { gte: 1 } },
       exclude: { channelExclusion: 0 },
     },
@@ -106,18 +113,30 @@ function listingsBody(from: number, size: number): string {
   });
 }
 
+export interface GetTcgListingsOpts {
+  /** Warehouse sub_type / TCG printing — required for correct per-variant supply. */
+  printing?: string;
+  /** Cap pages; omit to fetch all (exact qty). */
+  maxPages?: number;
+}
+
 /**
  * Fetch live TCGplayer listings (50/page, API max that works).
- * Default: page until every listing is retrieved so `totalQuantity` is exact.
- * Pass `maxPages` to cap (e.g. 1 for a cheap sample).
+ * Pass `printing` (= sub_type) to scope to that finish; otherwise all printings mix.
+ * Default: page until every matching listing is retrieved so qty is exact.
  */
 export async function getTcgListings(
   productId: number,
-  maxPages?: number,
-): Promise<{ total: number; listings: TcgListing[]; totalQuantity: number }> {
+  opts: GetTcgListingsOpts = {},
+): Promise<{
+  total: number;
+  listings: TcgListing[];
+  totalQuantity: number;
+  sellers: number;
+}> {
   const size = 50;
   /** Safety ceiling — ~2500 listing rows; deeper markets are extreme outliers. */
-  const pageCap = maxPages ?? 50;
+  const pageCap = opts.maxPages ?? 50;
   const all: TcgListing[] = [];
   let total = 0;
 
@@ -126,7 +145,7 @@ export async function getTcgListings(
       `https://${LISTINGS_HOST}/v1/product/${productId}/listings`,
       {
         method: "POST",
-        body: listingsBody(page * size, size),
+        body: listingsBody(page * size, size, opts.printing),
         headers: tcgHeaders(productId),
         timeoutMs: TCG_TIMEOUT_MS,
       },
@@ -156,7 +175,8 @@ export async function getTcgListings(
     if (total > 0 && all.length >= total) break;
   }
   const totalQuantity = all.reduce((s, l) => s + l.quantity, 0);
-  return { total, listings: all, totalQuantity };
+  const sellers = new Set(all.map((l) => l.sellerName).filter(Boolean)).size;
+  return { total, listings: all, totalQuantity, sellers };
 }
 
 export interface TcgSalesSeries {
@@ -194,13 +214,24 @@ export async function getTcgSalesHistory(
   }));
 }
 
-/** Aggregate sold velocity over the most recent N weeks across all SKUs. */
-export function aggregateVelocity(series: TcgSalesSeries[], weeks = 13) {
+/**
+ * Aggregate sold velocity over the most recent N weeks.
+ * Pass `variant` (= warehouse sub_type) to keep only that printing's buckets.
+ */
+export function aggregateVelocity(
+  series: TcgSalesSeries[],
+  weeks = 13,
+  variant?: string,
+) {
   let qty = 0;
   let txns = 0;
   let weeksCounted = 0;
   const seen = new Set<string>();
-  for (const s of series) {
+  const filtered =
+    variant != null && variant !== ""
+      ? series.filter((s) => s.variant.toLowerCase() === variant.toLowerCase())
+      : series;
+  for (const s of filtered) {
     for (const b of s.buckets.slice(0, weeks)) {
       qty += b.quantitySold;
       txns += b.transactionCount;

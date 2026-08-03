@@ -102,19 +102,23 @@ async function loadPriorSnapshot(
 
 /** Live TCGplayer liquidity scan for a card, persisted to `liquidity` + snapshot. */
 export async function enrichLiquidity(card: CardSummary): Promise<LiquidityResult> {
+  const printing = card.subType;
   const [details, listingsData, salesSeries, prior] = await Promise.all([
     getTcgDetails(card.productId),
-    getTcgListings(card.productId), // all pages @ 50 — exact total quantity
+    // Scope by sub_type (= TCG printing) so Normal/Holo/Reverse don't mix.
+    getTcgListings(card.productId, { printing }),
     getTcgSalesHistory(card.productId, "quarter"),
     loadPriorSnapshot(card.productId, card.subType),
   ]);
 
-  const vel = aggregateVelocity(salesSeries, 13);
-  const activeListings = details?.totalListings ?? listingsData.total;
+  const vel = aggregateVelocity(salesSeries, 13, printing);
+  // Prefer printing-scoped listing stats; details API is product-wide.
+  const activeListings = listingsData.total || details?.totalListings || 0;
   const totalQuantity = listingsData.totalQuantity;
-  const sellers = details?.totalSellers ?? 0;
-  const market = details?.marketPrice ?? card.market;
-  const lowestAsk = details?.lowestPrice ?? listingsData.listings[0]?.price ?? null;
+  const sellers = listingsData.sellers || details?.totalSellers || 0;
+  // price_windows.market is already per sub_type.
+  const market = card.market ?? details?.marketPrice;
+  const lowestAsk = listingsData.listings[0]?.price ?? details?.lowestPrice ?? null;
 
   const bidAskSpreadPct =
     lowestAsk !== null && market
@@ -156,6 +160,7 @@ export async function enrichLiquidity(card: CardSummary): Promise<LiquidityResul
          marketPrice: market,
          lowestAsk,
          sellers,
+         printing,
          velocityWeeks: vel.weeks,
          query: cardQueryString(card),
          baseScore,
