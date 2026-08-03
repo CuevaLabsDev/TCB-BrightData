@@ -106,15 +106,22 @@ function listingsBody(from: number, size: number): string {
   });
 }
 
+/**
+ * Fetch live TCGplayer listings (50/page, API max that works).
+ * Default: page until every listing is retrieved so `totalQuantity` is exact.
+ * Pass `maxPages` to cap (e.g. 1 for a cheap sample).
+ */
 export async function getTcgListings(
   productId: number,
-  maxPages = 1,
-): Promise<{ total: number; listings: TcgListing[] }> {
+  maxPages?: number,
+): Promise<{ total: number; listings: TcgListing[]; totalQuantity: number }> {
   const size = 50;
+  /** Safety ceiling — ~2500 listing rows; deeper markets are extreme outliers. */
+  const pageCap = maxPages ?? 50;
   const all: TcgListing[] = [];
   let total = 0;
 
-  for (let page = 0; page < maxPages; page++) {
+  for (let page = 0; page < pageCap; page++) {
     const text = await unlockerRequest(
       `https://${LISTINGS_HOST}/v1/product/${productId}/listings`,
       {
@@ -146,8 +153,10 @@ export async function getTcgListings(
       });
     }
     if (batch.length < size) break;
+    if (total > 0 && all.length >= total) break;
   }
-  return { total, listings: all };
+  const totalQuantity = all.reduce((s, l) => s + l.quantity, 0);
+  return { total, listings: all, totalQuantity };
 }
 
 export interface TcgSalesSeries {

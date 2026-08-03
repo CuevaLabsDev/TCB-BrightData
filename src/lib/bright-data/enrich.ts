@@ -104,14 +104,14 @@ async function loadPriorSnapshot(
 export async function enrichLiquidity(card: CardSummary): Promise<LiquidityResult> {
   const [details, listingsData, salesSeries, prior] = await Promise.all([
     getTcgDetails(card.productId),
-    getTcgListings(card.productId, 1),
+    getTcgListings(card.productId), // all pages @ 50 — exact total quantity
     getTcgSalesHistory(card.productId, "quarter"),
     loadPriorSnapshot(card.productId, card.subType),
   ]);
 
   const vel = aggregateVelocity(salesSeries, 13);
   const activeListings = details?.totalListings ?? listingsData.total;
-  const totalQuantity = listingsData.listings.reduce((s, l) => s + l.quantity, 0);
+  const totalQuantity = listingsData.totalQuantity;
   const sellers = details?.totalSellers ?? 0;
   const market = details?.marketPrice ?? card.market;
   const lowestAsk = details?.lowestPrice ?? listingsData.listings[0]?.price ?? null;

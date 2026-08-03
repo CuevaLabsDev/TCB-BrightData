@@ -45,13 +45,17 @@ function arg(name, fallback) {
 const MAX_MARKET = Number(arg("max-market", "2"));
 const STALE_HOURS = Number(arg("stale-hours", "24"));
 const LIMIT = Number(arg("limit", "500"));
-const CONCURRENCY = Math.max(1, Number(arg("concurrency", "8")));
+const CONCURRENCY = Math.max(1, Number(arg("concurrency", "6")));
 const MODE = String(arg("mode", "sync")); // sync | async
-const ENDPOINTS = String(arg("endpoints", "details,sales"))
+const ENDPOINTS = String(arg("endpoints", "details,sales,listings"))
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 const INCLUDE_LISTINGS = ENDPOINTS.includes("listings");
+/** TCG listings page size (API max that returns rows). */
+const LISTINGS_PAGE_SIZE = 50;
+/** Safety cap — 50 pages × 50 = 2500 listing rows. */
+const LISTINGS_MAX_PAGES = 50;
 
 const API = "https://api.brightdata.com/request";
 const ASYNC_SUBMIT = "https://api.brightdata.com/unblocker/req";
@@ -258,33 +262,44 @@ async function tcgDetails(pid) {
 }
 
 async function tcgListings(pid) {
-  const body = JSON.stringify({
-    filters: {
-      term: { sellerStatus: "Live" },
-      range: { quantity: { gte: 1 } },
-      exclude: { channelExclusion: 0 },
-    },
-    from: 0,
-    size: 50,
-    sort: { field: "price+shipping", order: "asc" },
-    context: { shippingCountry: "US", cart: {} },
-    aggregations: ["listingType"],
-  });
-  const t = await unlock(
-    `https://mp-search-api.tcgplayer.com/v1/product/${pid}/listings`,
-    { method: "POST", body, headers: tcgHeaders(pid) },
-  );
-  try {
-    const inner = (JSON.parse(t).results || [{}])[0];
-    const ls = inner.results || [];
-    return {
-      total: n(inner.totalResults) || ls.length,
-      qty: ls.reduce((s, l) => s + (n(l.quantity) || 0), 0),
-      lowest: ls.length ? n(ls[0].price) : null,
-    };
-  } catch {
-    return { total: 0, qty: 0, lowest: null };
+  let total = 0;
+  let qty = 0;
+  let lowest = null;
+  let fetched = 0;
+
+  for (let page = 0; page < LISTINGS_MAX_PAGES; page++) {
+    const body = JSON.stringify({
+      filters: {
+        term: { sellerStatus: "Live" },
+        range: { quantity: { gte: 1 } },
+        exclude: { channelExclusion: 0 },
+      },
+      from: page * LISTINGS_PAGE_SIZE,
+      size: LISTINGS_PAGE_SIZE,
+      sort: { field: "price+shipping", order: "asc" },
+      context: { shippingCountry: "US", cart: {} },
+      aggregations: ["listingType"],
+    });
+    const t = await unlock(
+      `https://mp-search-api.tcgplayer.com/v1/product/${pid}/listings`,
+      { method: "POST", body, headers: tcgHeaders(pid) },
+    );
+    let batch = [];
+    try {
+      const inner = (JSON.parse(t).results || [{}])[0] || {};
+      total = n(inner.totalResults) || total;
+      batch = inner.results || [];
+    } catch {
+      break;
+    }
+    if (page === 0 && batch.length) lowest = n(batch[0].price);
+    for (const l of batch) qty += n(l.quantity) || 0;
+    fetched += batch.length;
+    if (batch.length < LISTINGS_PAGE_SIZE) break;
+    if (total > 0 && fetched >= total) break;
   }
+
+  return { total: total || fetched, qty, lowest, pages: Math.ceil(fetched / LISTINGS_PAGE_SIZE) || 0 };
 }
 
 async function tcgSales(pid) {
@@ -321,9 +336,10 @@ function aggVelocity(series, weeks = 13) {
 }
 
 async function selectTargets() {
+  // When listings are on, also re-hit rows missing exact total_quantity.
   return sql`
     select w.product_id, w.sub_type, w.market, p.name,
-           l.as_of as liq_as_of
+           l.as_of as liq_as_of, l.total_quantity
     from price_windows w
     join products p on p.product_id = w.product_id
     left join liquidity l
@@ -336,8 +352,12 @@ async function selectTargets() {
       and (
         l.as_of is null
         or l.as_of < now() - (${STALE_HOURS}::text || ' hours')::interval
+        or (${INCLUDE_LISTINGS} and l.total_quantity is null)
       )
-    order by l.as_of nulls first, w.market desc
+    order by
+      (l.total_quantity is null) desc,
+      l.as_of nulls first,
+      w.market desc
     limit ${LIMIT}
   `;
 }
@@ -425,6 +445,9 @@ async function enrichOne(row) {
          name: row.name,
          mode: MODE,
          endpoints: ENDPOINTS,
+         listingsPages: listings?.pages ?? null,
+         listingRowsFetched: listings?.total ?? null,
+         totalQuantity: totalQuantity,
          baseScore,
          absorptionScoreDelta: absorption.scoreDelta,
        })})

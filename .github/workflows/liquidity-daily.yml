@@ -82,4 +82,4 @@ jobs:
             --limit "$LIMIT" \
             --concurrency "$CONCURRENCY" \
             --mode "$MODE" \
-            --endpoints details,sales
+            --endpoints details,sales,listings

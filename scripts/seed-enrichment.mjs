@@ -41,10 +41,23 @@ async function tcgDetails(pid) {
   catch { return null; }
 }
 async function tcgListings(pid) {
-  const body = JSON.stringify({ filters: { term: { sellerStatus: "Live" }, range: { quantity: { gte: 1 } }, exclude: { channelExclusion: 0 } }, from: 0, size: 50, sort: { field: "price+shipping", order: "asc" }, context: { shippingCountry: "US", cart: {} }, aggregations: ["listingType"] });
-  const t = await bd(`https://mp-search-api.tcgplayer.com/v1/product/${pid}/listings`, { method: "POST", body, headers: tcgHeaders(pid) });
-  try { const inner = (JSON.parse(t).results || [{}])[0]; const ls = inner.results || []; return { total: n(inner.totalResults) || ls.length, listings: ls, qty: ls.reduce((s, l) => s + (n(l.quantity) || 0), 0) }; }
-  catch { return { total: 0, listings: [], qty: 0 }; }
+  const size = 50;
+  let total = 0, qty = 0, listings = [];
+  for (let page = 0; page < 50; page++) {
+    const body = JSON.stringify({ filters: { term: { sellerStatus: "Live" }, range: { quantity: { gte: 1 } }, exclude: { channelExclusion: 0 } }, from: page * size, size, sort: { field: "price+shipping", order: "asc" }, context: { shippingCountry: "US", cart: {} }, aggregations: ["listingType"] });
+    const t = await bd(`https://mp-search-api.tcgplayer.com/v1/product/${pid}/listings`, { method: "POST", body, headers: tcgHeaders(pid) });
+    let batch = [];
+    try {
+      const inner = (JSON.parse(t).results || [{}])[0] || {};
+      total = n(inner.totalResults) || total;
+      batch = inner.results || [];
+    } catch { break; }
+    listings = listings.concat(batch);
+    for (const l of batch) qty += n(l.quantity) || 0;
+    if (batch.length < size) break;
+    if (total > 0 && listings.length >= total) break;
+  }
+  return { total: total || listings.length, listings, qty };
 }
 async function tcgSales(pid) {
   const t = await bd(`https://infinite-api.tcgplayer.com/price/history/${pid}/detailed?range=quarter`, { headers: tcgHeaders(pid) });
