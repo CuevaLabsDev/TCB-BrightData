@@ -59,10 +59,10 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
-          cache: npm
 
-      - name: Install dependencies
-        run: npm ci --omit=dev
+      # Only need `postgres` for the bulk script — avoid npm ci / full Next lockfile.
+      - name: Install script dependency
+        run: npm install --no-save --no-package-lock postgres@3.4.9
 
       - name: Preload liquidity (stale-first)
         env:
