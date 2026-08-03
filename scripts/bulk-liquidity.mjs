@@ -56,10 +56,24 @@ const INCLUDE_LISTINGS = ENDPOINTS.includes("listings");
 const API = "https://api.brightdata.com/request";
 const ASYNC_SUBMIT = "https://api.brightdata.com/unblocker/req";
 const ASYNC_RESULT = "https://api.brightdata.com/unblocker/get_result";
-const KEY = env.BRIGHT_DATA_API_KEY;
-const SYNC_ZONE = env.BRIGHT_DATA_UNLOCKER_ZONE || "tcb_1";
-const ASYNC_ZONE = env.BRIGHT_DATA_UNLOCKER_ASYNC_ZONE || "";
-const DB_URL = env.PIPELINE_DB_URL || env.SUPABASE_DB_URL || env.DATABASE_URL;
+function cleanSecret(v) {
+  if (v == null) return "";
+  let s = String(v).trim();
+  // Strip accidental wrapping quotes / Bearer prefix from pasted secrets.
+  if (
+    (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith("'") && s.endsWith("'"))
+  ) {
+    s = s.slice(1, -1).trim();
+  }
+  if (/^bearer\s+/i.test(s)) s = s.replace(/^bearer\s+/i, "").trim();
+  return s;
+}
+
+const KEY = cleanSecret(env.BRIGHT_DATA_API_KEY);
+const SYNC_ZONE = cleanSecret(env.BRIGHT_DATA_UNLOCKER_ZONE) || "tcb_1";
+const ASYNC_ZONE = cleanSecret(env.BRIGHT_DATA_UNLOCKER_ASYNC_ZONE);
+const DB_URL = cleanSecret(env.PIPELINE_DB_URL || env.SUPABASE_DB_URL || env.DATABASE_URL);
 
 if (!KEY) {
   console.error("BRIGHT_DATA_API_KEY missing");
@@ -73,6 +87,10 @@ if (MODE === "async" && !ASYNC_ZONE) {
   console.error("BRIGHT_DATA_UNLOCKER_ASYNC_ZONE required for --mode async");
   process.exit(1);
 }
+
+console.log(
+  `[bulk-liquidity] auth key_len=${KEY.length} zone=${JSON.stringify(SYNC_ZONE)}`,
+);
 
 const sql = postgres(DB_URL, { prepare: false, ssl: "require", max: CONCURRENCY + 2 });
 const n = (v) =>
