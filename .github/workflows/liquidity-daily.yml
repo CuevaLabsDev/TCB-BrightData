@@ -1,30 +1,34 @@
-# Daily TCGplayer liquidity preload via Bright Data Web Unlocker.
-# Stale-first, budgeted batch — keeps under-$2 (default) series warm for browse.
-# Not a Vercel cron: multi-minute Unlocker work belongs on GHA.
+# Daily / backfill TCGplayer liquidity preload via Bright Data Web Unlocker.
+# Stale-first + missing total_quantity — exact available qty (listings @ 50/page).
+# Not a Vercel cron: multi-hour Unlocker work belongs on GHA.
 #
 # Secrets:
-#   PIPELINE_DB_URL              — Supabase session pooler (5432)
+#   PIPELINE_DB_URL
 #   BRIGHT_DATA_API_KEY
-#   BRIGHT_DATA_UNLOCKER_ZONE    — sync zone (default path)
+#   BRIGHT_DATA_UNLOCKER_ZONE
 # Optional:
-#   BRIGHT_DATA_UNLOCKER_ASYNC_ZONE — if set, workflow can use --mode async
+#   BRIGHT_DATA_UNLOCKER_ASYNC_ZONE
 
 name: liquidity-daily
 
 on:
   schedule:
-    # After tcgcsv-daily (~21:30 UTC)
+    # After tcgcsv-daily (~21:30 UTC) — warm stale rows
     - cron: "30 23 * * *"
   workflow_dispatch:
     inputs:
       limit:
-        description: "Max series to refresh this run"
+        description: "Max series this run (stale-first; re-run to continue backfill)"
         required: false
-        default: "800"
+        default: "25000"
       max_market:
         description: "Only series with market under this USD"
         required: false
         default: "2"
+      stale_hours:
+        description: "Refresh rows older than this many hours"
+        required: false
+        default: "24"
       mode:
         description: "sync or async"
         required: false
@@ -34,10 +38,17 @@ on:
         required: false
         default: "6"
 
+# One Unlocker liquidity job at a time (avoid zone contention).
+concurrency:
+  group: liquidity-unlocker
+  cancel-in-progress: false
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # Full under-$2 pass with listings pagination needs a long budget; re-run
+    # workflow_dispatch to continue (stale-first + missing qty resumes).
+    timeout-minutes: 360
     steps:
       - name: Check secrets
         env:
@@ -60,11 +71,10 @@ jobs:
         with:
           node-version: "22"
 
-      # Only need `postgres` for the bulk script — avoid npm ci / full Next lockfile.
       - name: Install script dependency
         run: npm install --no-save --no-package-lock postgres@3.4.9
 
-      - name: Preload liquidity (stale-first)
+      - name: Preload liquidity (stale-first, exact qty)
         env:
           PIPELINE_DB_URL: ${{ secrets.PIPELINE_DB_URL }}
           SUPABASE_DB_URL: ${{ secrets.PIPELINE_DB_URL }}
@@ -73,12 +83,13 @@ jobs:
           BRIGHT_DATA_UNLOCKER_ASYNC_ZONE: ${{ secrets.BRIGHT_DATA_UNLOCKER_ASYNC_ZONE }}
           LIMIT: ${{ github.event.inputs.limit || '800' }}
           MAX_MARKET: ${{ github.event.inputs.max_market || '2' }}
+          STALE_HOURS: ${{ github.event.inputs.stale_hours || '24' }}
           MODE: ${{ github.event.inputs.mode || 'sync' }}
           CONCURRENCY: ${{ github.event.inputs.concurrency || '6' }}
         run: |
           node scripts/bulk-liquidity.mjs \
             --max-market "$MAX_MARKET" \
-            --stale-hours 24 \
+            --stale-hours "$STALE_HOURS" \
             --limit "$LIMIT" \
             --concurrency "$CONCURRENCY" \
             --mode "$MODE" \
