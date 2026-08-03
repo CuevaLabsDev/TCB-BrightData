@@ -1,6 +1,9 @@
 # Daily / backfill TCGplayer liquidity preload via Bright Data Web Unlocker.
-# Stale-first + missing total_quantity — exact available qty (listings @ 50/page).
-# Not a Vercel cron: multi-hour Unlocker work belongs on GHA.
+# Stale-first + missing total_quantity — exact available qty (listings @ 50/page),
+# scoped by sub_type (= TCG printing).
+#
+# Sustained Unlocker load causes empty-body / 502 storms — keep concurrency low,
+# chunk limits, and rely on retries + resume. Re-run until remaining = 0.
 #
 # Secrets:
 #   PIPELINE_DB_URL
@@ -13,14 +16,14 @@ name: liquidity-daily
 
 on:
   schedule:
-    # After tcgcsv-daily (~21:30 UTC) — warm stale rows
+    # After tcgcsv-daily (~21:30 UTC) — warm stale / missing-qty rows
     - cron: "30 23 * * *"
   workflow_dispatch:
     inputs:
       limit:
         description: "Max series this run (stale-first; re-run to continue backfill)"
         required: false
-        default: "25000"
+        default: "2500"
       max_market:
         description: "Only series with market under this USD"
         required: false
@@ -34,9 +37,9 @@ on:
         required: false
         default: "sync"
       concurrency:
-        description: "Parallel cards"
+        description: "Parallel cards (3 recommended for long Unlocker runs)"
         required: false
-        default: "6"
+        default: "3"
 
 # One Unlocker liquidity job at a time (avoid zone contention).
 concurrency:
@@ -46,8 +49,6 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    # Full under-$2 pass with listings pagination needs a long budget; re-run
-    # workflow_dispatch to continue (stale-first + missing qty resumes).
     timeout-minutes: 360
     steps:
       - name: Check secrets
@@ -85,7 +86,7 @@ jobs:
           MAX_MARKET: ${{ github.event.inputs.max_market || '2' }}
           STALE_HOURS: ${{ github.event.inputs.stale_hours || '24' }}
           MODE: ${{ github.event.inputs.mode || 'sync' }}
-          CONCURRENCY: ${{ github.event.inputs.concurrency || '6' }}
+          CONCURRENCY: ${{ github.event.inputs.concurrency || '3' }}
         run: |
           node scripts/bulk-liquidity.mjs \
             --max-market "$MAX_MARKET" \

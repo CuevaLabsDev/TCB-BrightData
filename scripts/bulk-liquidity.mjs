@@ -45,7 +45,7 @@ function arg(name, fallback) {
 const MAX_MARKET = Number(arg("max-market", "2"));
 const STALE_HOURS = Number(arg("stale-hours", "24"));
 const LIMIT = Number(arg("limit", "500"));
-const CONCURRENCY = Math.max(1, Number(arg("concurrency", "6")));
+const CONCURRENCY = Math.max(1, Number(arg("concurrency", "3")));
 const MODE = String(arg("mode", "sync")); // sync | async
 const ENDPOINTS = String(arg("endpoints", "details,sales,listings"))
   .split(",")
@@ -56,6 +56,14 @@ const INCLUDE_LISTINGS = ENDPOINTS.includes("listings");
 const LISTINGS_PAGE_SIZE = 50;
 /** Safety cap — 50 pages × 50 = 2500 listing rows. */
 const LISTINGS_MAX_PAGES = 50;
+/** Per-request Unlocker attempts (empty body / 502 / timeout). */
+const UNLOCK_RETRIES = 4;
+/** Fail the GHA job if failure rate exceeds this (after retries). */
+const MAX_FAIL_RATE = 0.05;
+
+/** Shared backoff when the Unlocker zone starts returning empties/502s. */
+let zoneCooldownUntil = 0;
+let consecutiveTransientFails = 0;
 
 const API = "https://api.brightdata.com/request";
 const ASYNC_SUBMIT = "https://api.brightdata.com/unblocker/req";
@@ -177,7 +185,35 @@ function computeAbsorption(current, prior) {
   };
 }
 
-async function syncUnlock(url, { method = "GET", body, headers } = {}) {
+function isTransientUnlockError(msg) {
+  return /empty Unlocker body|aborted due to timeout|timeout|Unlocker 502|Unlocker 503|Unlocker 429|fetch failed|rate limit|ECONNRESET|socket/i.test(
+    msg,
+  );
+}
+
+async function waitZoneCooldown() {
+  const wait = zoneCooldownUntil - Date.now();
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+}
+
+function noteTransientFail() {
+  consecutiveTransientFails++;
+  // After a burst of empties/502s, pause the whole pool — zone is saturated.
+  if (consecutiveTransientFails >= 8) {
+    const coolMs = Math.min(120_000, 15_000 * Math.min(consecutiveTransientFails - 7, 6));
+    zoneCooldownUntil = Math.max(zoneCooldownUntil, Date.now() + coolMs);
+    console.warn(
+      `[bulk-liquidity] zone cooldown ${Math.round(coolMs / 1000)}s after ${consecutiveTransientFails} transient fails`,
+    );
+    consecutiveTransientFails = 0;
+  }
+}
+
+function noteUnlockOk() {
+  consecutiveTransientFails = 0;
+}
+
+async function syncUnlockOnce(url, { method = "GET", body, headers } = {}) {
   const payload = { zone: SYNC_ZONE, url, format: "raw" };
   if (method !== "GET") payload.method = method;
   if (body) payload.body = body;
@@ -186,12 +222,34 @@ async function syncUnlock(url, { method = "GET", body, headers } = {}) {
     method: "POST",
     headers: { Authorization: `Bearer ${KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(35_000),
+    signal: AbortSignal.timeout(45_000),
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`Unlocker ${res.status}: ${text.slice(0, 200)}`);
   if (!text.trim()) throw new Error("empty Unlocker body");
   return text;
+}
+
+async function syncUnlock(url, opts = {}) {
+  let lastErr;
+  for (let attempt = 1; attempt <= UNLOCK_RETRIES; attempt++) {
+    await waitZoneCooldown();
+    try {
+      const text = await syncUnlockOnce(url, opts);
+      noteUnlockOk();
+      return text;
+    } catch (e) {
+      lastErr = e;
+      const msg = e instanceof Error ? e.message : String(e);
+      if (!isTransientUnlockError(msg) || attempt === UNLOCK_RETRIES) break;
+      noteTransientFail();
+      // 2s, 5s, 12s — give DataDome/Unlocker room to recover.
+      const backoff = Math.round(2000 * Math.pow(2.2, attempt - 1));
+      await new Promise((r) => setTimeout(r, backoff));
+    }
+  }
+  noteTransientFail();
+  throw lastErr;
 }
 
 async function asyncUnlock(url, { method = "GET", body, headers } = {}) {
@@ -372,10 +430,17 @@ async function selectTargets() {
       and (
         l.as_of is null
         or l.as_of < now() - (${STALE_HOURS}::text || ' hours')::interval
-        or (${INCLUDE_LISTINGS} and l.total_quantity is null)
+        or (
+          ${INCLUDE_LISTINGS}
+          and (
+            l.total_quantity is null
+            or l.raw->>'printing' is distinct from w.sub_type
+          )
+        )
       )
     order by
       (l.total_quantity is null) desc,
+      (l.raw->>'printing' is distinct from w.sub_type) desc,
       l.as_of nulls first,
       w.market desc
     limit ${LIMIT}
@@ -566,10 +631,13 @@ async function main() {
   });
 
   const elapsedMs = Date.now() - t0;
+  const attempted = ok + fail;
+  const failRate = attempted ? fail / attempted : 0;
+  const hardFail = fail > 0 && (ok === 0 || failRate > MAX_FAIL_RATE);
   await sql`
     update ingest_runs
     set finished_at = now(),
-        status = ${fail && !ok ? "error" : "ok"},
+        status = ${hardFail ? "error" : "ok"},
         rows = ${ok},
         detail = ${sql.json({
           maxMarket: MAX_MARKET,
@@ -581,6 +649,8 @@ async function main() {
           selected: targets.length,
           ok,
           fail,
+          failRate,
+          unlockRetries: UNLOCK_RETRIES,
           elapsedMs,
           cardsPerSec: ok / Math.max(1, elapsedMs / 1000),
         })}
@@ -588,10 +658,11 @@ async function main() {
   `;
 
   console.log(
-    `[bulk-liquidity] done ok=${ok} fail=${fail} ${(elapsedMs / 1000).toFixed(1)}s run_id=${runId}`,
+    `[bulk-liquidity] done ok=${ok} fail=${fail} failRate=${(failRate * 100).toFixed(1)}% ${(elapsedMs / 1000).toFixed(1)}s run_id=${runId}`,
   );
   await sql.end({ timeout: 5 });
-  process.exit(fail && !ok ? 1 : 0);
+  // Non-zero exit so GHA is red unless the pass is clean enough to continue.
+  process.exit(hardFail ? 1 : 0);
 }
 
 main().catch(async (e) => {
