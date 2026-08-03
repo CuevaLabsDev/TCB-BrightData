@@ -141,7 +141,12 @@ export async function serpSearch(
 /** Fetch a bot-protected page's HTML via Web Unlocker. */
 export async function unlockPage(
   url: string,
-  opts: { country?: string; timeoutMs?: number } = {},
+  opts: {
+    country?: string;
+    timeoutMs?: number;
+    /** Unlocker-only headers (e.g. x-unblock-expect). Requires Manual expect on the zone. */
+    headers?: Record<string, string>;
+  } = {},
 ): Promise<string> {
   // Prefer format:"json" so Unlocker wait/rate-limit failures surface as
   // x-brd-error instead of an empty raw body that looks like "no comps".
@@ -149,6 +154,7 @@ export async function unlockPage(
     format: "json",
     country: opts.country ?? "us",
     timeoutMs: opts.timeoutMs,
+    headers: opts.headers,
   });
 }
 

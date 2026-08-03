@@ -196,13 +196,41 @@ function isTimeoutError(e: unknown): boolean {
   );
 }
 
+/**
+ * Wait for body (not listing cards). Sold SRPs often hit an eBay sign-in wall
+ * where li.s-item never appears — waiting on cards burns 90s for nothing.
+ * Zone must have Manual expect elements ON so this overrides Bright Data's
+ * automatic eBay wait (.srp-controls__default-refinements).
+ */
+const EBAY_EXPECT_HEADER = {
+  "x-unblock-expect": JSON.stringify({ element: "body" }),
+};
+
+function assertEbayHtmlUsable(html: string, url: string): void {
+  // Sold/completed views frequently return the auth interstitial via Unlocker.
+  if (/<title[^>]*>\s*Sign in or Register/i.test(html.slice(0, 4000))) {
+    throw new Error(
+      "eBay returned a sign-in wall for sold listings (Unlocker is not authenticated). Enable Premium domains for eBay on this zone, or use a dedicated sold-listings source.",
+    );
+  }
+  void url;
+}
+
 async function unlockPageWithRetry(url: string): Promise<string> {
-  const attempt = () => unlockPage(url, { timeoutMs: EBAY_TIMEOUT_MS });
+  const attempt = async () => {
+    const html = await unlockPage(url, {
+      timeoutMs: EBAY_TIMEOUT_MS,
+      headers: EBAY_EXPECT_HEADER,
+    });
+    assertEbayHtmlUsable(html, url);
+    return html;
+  };
   try {
     return await attempt();
   } catch (e) {
-    // Retry once on timeout, empty body, or adaptive rate limit.
+    // Retry once on timeout, empty body, or adaptive rate limit — not sign-in.
     const msg = e instanceof Error ? e.message : "";
+    if (/sign-in wall/i.test(msg)) throw e;
     const retryable =
       isTimeoutError(e) ||
       /empty body|rate limit|bucket_rate_limit|waiting for selector/i.test(msg);
