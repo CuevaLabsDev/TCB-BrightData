@@ -204,11 +204,13 @@ export async function POST(req: Request) {
               graded: merged,
             });
           } catch (e) {
+            const error = e instanceof Error ? e.message : "PSA scrape failed";
+            console.error(`enrichGraded failed for product ${productId} (${card.name}):`, error);
             send({
               type: "graded",
               cached: false,
               graded: storedGraded.map(mapStoredGraded),
-              error: e instanceof Error ? e.message : "PSA scrape failed",
+              error,
             });
           }
         }

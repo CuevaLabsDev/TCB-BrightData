@@ -356,7 +356,7 @@ export const agentTools = {
 
   get_liquidity: tool({
     description:
-      "Get marketplace liquidity for a card: composite liquidity score (0-100), sold velocity (per day), active listing depth, seller count, and bid/ask spread. From TCGplayer + eBay via Bright Data.",
+      "Get stored marketplace liquidity for a card: composite score (0-100), sold velocity, listing depth, sellers, bid/ask spread, and absorption (consumption vs replenishment). Preloaded daily from TCGplayer via Bright Data; not a live scrape.",
     inputSchema: z.object({
       query: z.string(),
       productId: z.number().int().optional(),
@@ -373,11 +373,16 @@ export const agentTools = {
           score: l.liquidityScore,
           soldVelocity: l.soldVelocity,
           activeListings: l.activeListings,
+          sellers: l.sellers,
           bidAskSpreadPct: l.bidAskSpreadPct,
+          consumptionRate: l.consumptionRate,
+          replenishmentRate: l.replenishmentRate,
+          absorptionRatio: l.absorptionRatio,
+          asOf: l.asOf,
         })),
         note:
           liq.length === 0
-            ? "No stored liquidity data. Offer a live Bright Data refresh only if the user wants fresh liquidity."
+            ? "No stored liquidity yet — daily preload may not have reached this card. Offer a live Bright Data refresh only if the user wants fresh liquidity."
             : undefined,
       };
     },

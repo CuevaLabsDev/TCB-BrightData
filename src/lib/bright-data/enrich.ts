@@ -1,6 +1,10 @@
 import "server-only";
 import { sql } from "@/lib/db";
 import type { CardSummary } from "@/lib/types";
+import {
+  applyAbsorptionToScore,
+  computeAbsorption,
+} from "./absorption";
 import { scanGradedSold, type EbayScan } from "./ebay";
 import {
   aggregateVelocity,
@@ -19,7 +23,9 @@ import {
  *                JSON via the internal TCGplayer APIs through Web Unlocker.
  *   Graded     = eBay PSA-10/9 realized sold comps -> raw->graded multiple.
  *
- * Persisting means the dashboard reads instantly; the agent + cron refresh.
+ * Daily preload (scripts/bulk-liquidity.mjs) keeps browse paths warm; this
+ * module also supports on-demand force refresh. Each write appends a snapshot
+ * for consumption vs replenishment scoring.
  */
 
 function cardQueryString(card: CardSummary): string {
@@ -60,19 +66,52 @@ export interface LiquidityResult {
   soldPerDay: number;
   bidAskSpreadPct: number | null;
   score: number;
+  consumptionRate: number | null;
+  replenishmentRate: number | null;
+  absorptionRatio: number | null;
   topListings: { price: number; shipping: number; condition: string; seller: string; rating: number }[];
 }
 
-/** Live TCGplayer liquidity scan for a card, persisted to `liquidity`. */
+async function loadPriorSnapshot(
+  productId: number,
+  subType: string,
+): Promise<{
+  asOf: Date;
+  activeListings: number | null;
+  totalQuantity: number | null;
+  soldVelocity: number | null;
+} | null> {
+  const rows = await sql`
+    select as_of, active_listings, total_quantity, sold_velocity
+    from liquidity_snapshots
+    where product_id = ${productId}
+      and sub_type = ${subType}
+      and source = 'tcgplayer'
+    order by as_of desc
+    limit 1
+  `;
+  const r = rows[0];
+  if (!r) return null;
+  return {
+    asOf: r.as_of instanceof Date ? r.as_of : new Date(String(r.as_of)),
+    activeListings: r.active_listings === null ? null : Number(r.active_listings),
+    totalQuantity: r.total_quantity === null ? null : Number(r.total_quantity),
+    soldVelocity: r.sold_velocity === null ? null : Number(r.sold_velocity),
+  };
+}
+
+/** Live TCGplayer liquidity scan for a card, persisted to `liquidity` + snapshot. */
 export async function enrichLiquidity(card: CardSummary): Promise<LiquidityResult> {
-  const [details, listingsData, salesSeries] = await Promise.all([
+  const [details, listingsData, salesSeries, prior] = await Promise.all([
     getTcgDetails(card.productId),
     getTcgListings(card.productId, 1),
     getTcgSalesHistory(card.productId, "quarter"),
+    loadPriorSnapshot(card.productId, card.subType),
   ]);
 
   const vel = aggregateVelocity(salesSeries, 13);
   const activeListings = details?.totalListings ?? listingsData.total;
+  const totalQuantity = listingsData.listings.reduce((s, l) => s + l.quantity, 0);
   const sellers = details?.totalSellers ?? 0;
   const market = details?.marketPrice ?? card.market;
   const lowestAsk = details?.lowestPrice ?? listingsData.listings[0]?.price ?? null;
@@ -82,29 +121,45 @@ export async function enrichLiquidity(card: CardSummary): Promise<LiquidityResul
       ? Math.round(((lowestAsk - market) / market) * 1000) / 10
       : null;
 
-  const score = liquidityScore({
+  const baseScore = liquidityScore({
     weeklyQtySold: vel.weeks ? vel.qtySold / vel.weeks : 0,
     activeListings,
     sellers,
     bidAskSpreadPct,
   });
 
+  const now = new Date();
+  const absorption = computeAbsorption(
+    {
+      asOf: now,
+      activeListings,
+      totalQuantity,
+      soldVelocity: vel.perDay,
+    },
+    prior,
+  );
+  const score = applyAbsorptionToScore(baseScore, absorption.scoreDelta);
+
   await sql`
     insert into liquidity
       (product_id, sub_type, source, as_of, active_listings, total_quantity,
        total_qty_sold_90d, total_txn_90d, sold_velocity, bid_ask_spread_pct,
-       liquidity_score, raw)
+       liquidity_score, sellers, consumption_rate, replenishment_rate,
+       absorption_ratio, raw)
     values
-      (${card.productId}, ${card.subType}, 'tcgplayer', now(),
-       ${activeListings}, ${listingsData.listings.reduce((s, l) => s + l.quantity, 0)},
+      (${card.productId}, ${card.subType}, 'tcgplayer', ${now.toISOString()},
+       ${activeListings}, ${totalQuantity},
        ${vel.qtySold}, ${vel.transactions}, ${vel.perDay}, ${bidAskSpreadPct},
-       ${score},
+       ${score}, ${sellers}, ${absorption.consumptionRate},
+       ${absorption.replenishmentRate}, ${absorption.absorptionRatio},
        ${sql.json({
          marketPrice: market,
          lowestAsk,
          sellers,
          velocityWeeks: vel.weeks,
          query: cardQueryString(card),
+         baseScore,
+         absorptionScoreDelta: absorption.scoreDelta,
        } as never)})
     on conflict (product_id, sub_type, source) do update set
       as_of = excluded.as_of,
@@ -115,7 +170,26 @@ export async function enrichLiquidity(card: CardSummary): Promise<LiquidityResul
       sold_velocity = excluded.sold_velocity,
       bid_ask_spread_pct = excluded.bid_ask_spread_pct,
       liquidity_score = excluded.liquidity_score,
+      sellers = excluded.sellers,
+      consumption_rate = excluded.consumption_rate,
+      replenishment_rate = excluded.replenishment_rate,
+      absorption_ratio = excluded.absorption_ratio,
       raw = excluded.raw
+  `;
+
+  await sql`
+    insert into liquidity_snapshots
+      (product_id, sub_type, source, as_of, active_listings, total_quantity,
+       sellers, sold_velocity, total_qty_sold_90d, bid_ask_spread_pct,
+       liquidity_score, listings_delta, qty_delta, consumption_rate,
+       replenishment_rate, absorption_ratio)
+    values
+      (${card.productId}, ${card.subType}, 'tcgplayer', ${now.toISOString()},
+       ${activeListings}, ${totalQuantity}, ${sellers}, ${vel.perDay},
+       ${vel.qtySold}, ${bidAskSpreadPct}, ${score},
+       ${absorption.listingsDelta}, ${absorption.qtyDelta},
+       ${absorption.consumptionRate}, ${absorption.replenishmentRate},
+       ${absorption.absorptionRatio})
   `;
 
   return {
@@ -129,6 +203,9 @@ export async function enrichLiquidity(card: CardSummary): Promise<LiquidityResul
     soldPerDay: vel.perDay,
     bidAskSpreadPct,
     score,
+    consumptionRate: absorption.consumptionRate,
+    replenishmentRate: absorption.replenishmentRate,
+    absorptionRatio: absorption.absorptionRatio,
     topListings: listingsData.listings.slice(0, 8).map((l) => ({
       price: l.price,
       shipping: l.shippingPrice,
@@ -156,8 +233,8 @@ export interface GradedResult {
  *
  * Grades are fetched **sequentially** on purpose: two parallel eBay Unlocker
  * HTML calls contend on the same zone and often make wall-clock *worse*
- * (measured ~39s parallel vs ~21s for a single PSA-10). Live refresh should
- * pass `[10]` only; use `[10, 9]` for full backfills / agent deep scans.
+ * (measured ~39s parallel vs ~21s for a single PSA-10). Live refresh passes
+ * `[10, 9]`; callers on a tighter time budget can pass `[10]` only.
  */
 export async function enrichGraded(
   card: CardSummary,

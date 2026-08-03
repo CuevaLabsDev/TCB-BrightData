@@ -218,7 +218,7 @@ export default async function CardPage({
           />
           {!liq ? (
             <p className="py-8 text-center text-sm text-zinc-600">
-              No liquidity data yet — hit “Refresh live”.
+              Awaiting daily liquidity refresh. Optional: use Refresh live for an on-demand scan.
             </p>
           ) : (
             <div className="space-y-4">
@@ -239,6 +239,31 @@ export default async function CardPage({
                   label="Bid/ask spread"
                   value={liq.bidAskSpreadPct === null ? "—" : `${liq.bidAskSpreadPct}%`}
                 />
+                <Metric
+                  label="Consumption"
+                  value={
+                    liq.consumptionRate === null || liq.consumptionRate === undefined
+                      ? "—"
+                      : `${liq.consumptionRate.toFixed(2)}/day`
+                  }
+                />
+                <Metric
+                  label="Replenishment"
+                  value={
+                    liq.replenishmentRate === null || liq.replenishmentRate === undefined
+                      ? "—"
+                      : `${liq.replenishmentRate.toFixed(2)}/day`
+                  }
+                />
+                <Metric
+                  label="Absorption"
+                  value={
+                    liq.absorptionRatio === null || liq.absorptionRatio === undefined
+                      ? "—"
+                      : `${liq.absorptionRatio.toFixed(2)}×`
+                  }
+                />
+                <Metric label="Sellers" value={formatNumber(liq.sellers)} />
               </div>
             </div>
           )}

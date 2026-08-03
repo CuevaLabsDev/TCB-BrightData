@@ -290,6 +290,10 @@ export async function getLiquidity(productId: number): Promise<Liquidity[]> {
     soldVelocity: num(r.sold_velocity),
     bidAskSpreadPct: num(r.bid_ask_spread_pct),
     liquidityScore: num(r.liquidity_score),
+    sellers: num(r.sellers),
+    consumptionRate: num(r.consumption_rate),
+    replenishmentRate: num(r.replenishment_rate),
+    absorptionRatio: num(r.absorption_ratio),
     asOf: toIsoTimestamp(r.as_of),
   }));
 }

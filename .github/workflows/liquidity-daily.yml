@@ -1,0 +1,85 @@
+# Daily TCGplayer liquidity preload via Bright Data Web Unlocker.
+# Stale-first, budgeted batch — keeps under-$2 (default) series warm for browse.
+# Not a Vercel cron: multi-minute Unlocker work belongs on GHA.
+#
+# Secrets:
+#   PIPELINE_DB_URL              — Supabase session pooler (5432)
+#   BRIGHT_DATA_API_KEY
+#   BRIGHT_DATA_UNLOCKER_ZONE    — sync zone (default path)
+# Optional:
+#   BRIGHT_DATA_UNLOCKER_ASYNC_ZONE — if set, workflow can use --mode async
+
+name: liquidity-daily
+
+on:
+  schedule:
+    # After tcgcsv-daily (~21:30 UTC)
+    - cron: "30 23 * * *"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Max series to refresh this run"
+        required: false
+        default: "800"
+      max_market:
+        description: "Only series with market under this USD"
+        required: false
+        default: "2"
+      mode:
+        description: "sync or async"
+        required: false
+        default: "sync"
+      concurrency:
+        description: "Parallel cards"
+        required: false
+        default: "8"
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check secrets
+        env:
+          PIPELINE_DB_URL: ${{ secrets.PIPELINE_DB_URL }}
+          BRIGHT_DATA_API_KEY: ${{ secrets.BRIGHT_DATA_API_KEY }}
+          BRIGHT_DATA_UNLOCKER_ZONE: ${{ secrets.BRIGHT_DATA_UNLOCKER_ZONE }}
+        run: |
+          missing=0
+          for v in PIPELINE_DB_URL BRIGHT_DATA_API_KEY BRIGHT_DATA_UNLOCKER_ZONE; do
+            if [ -z "${!v}" ]; then
+              echo "$v secret is not set"
+              missing=1
+            fi
+          done
+          exit $missing
+
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --omit=dev
+
+      - name: Preload liquidity (stale-first)
+        env:
+          PIPELINE_DB_URL: ${{ secrets.PIPELINE_DB_URL }}
+          SUPABASE_DB_URL: ${{ secrets.PIPELINE_DB_URL }}
+          BRIGHT_DATA_API_KEY: ${{ secrets.BRIGHT_DATA_API_KEY }}
+          BRIGHT_DATA_UNLOCKER_ZONE: ${{ secrets.BRIGHT_DATA_UNLOCKER_ZONE }}
+          BRIGHT_DATA_UNLOCKER_ASYNC_ZONE: ${{ secrets.BRIGHT_DATA_UNLOCKER_ASYNC_ZONE }}
+          LIMIT: ${{ github.event.inputs.limit || '800' }}
+          MAX_MARKET: ${{ github.event.inputs.max_market || '2' }}
+          MODE: ${{ github.event.inputs.mode || 'sync' }}
+          CONCURRENCY: ${{ github.event.inputs.concurrency || '8' }}
+        run: |
+          node scripts/bulk-liquidity.mjs \
+            --max-market "$MAX_MARKET" \
+            --stale-hours 24 \
+            --limit "$LIMIT" \
+            --concurrency "$CONCURRENCY" \
+            --mode "$MODE" \
+            --endpoints details,sales

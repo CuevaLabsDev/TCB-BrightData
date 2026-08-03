@@ -55,6 +55,13 @@ export interface Liquidity {
   soldVelocity: number | null;
   bidAskSpreadPct: number | null;
   liquidityScore: number | null;
+  sellers: number | null;
+  /** Sold qty/day (same units as soldVelocity). */
+  consumptionRate: number | null;
+  /** New listing depth/day from snapshot deltas. */
+  replenishmentRate: number | null;
+  /** consumption / replenishment — high means supply is being eaten. */
+  absorptionRatio: number | null;
   asOf: string;
 }
 

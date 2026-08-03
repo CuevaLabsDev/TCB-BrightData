@@ -23,6 +23,20 @@ type GradedPayload = {
   soldPerMonth?: number | null;
 };
 
+function gradedStatus(
+  liquidityScore: number | null | undefined,
+  gradedCount: number,
+  gradedError: string | null,
+): string {
+  const liq = liquidityScore ?? "-";
+  if (gradedError) {
+    const truncated =
+      gradedError.length > 160 ? `${gradedError.slice(0, 160)}...` : gradedError;
+    return `Liquidity ${liq} ok, PSA scrape failed: ${truncated}`;
+  }
+  return `Live: liquidity ${liq}, ${gradedCount} graded comps`;
+}
+
 export function RefreshLiveButton({ productId, subType }: { productId: number; subType: string }) {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
@@ -39,13 +53,13 @@ export function RefreshLiveButton({ productId, subType }: { productId: number; s
       const res = await fetch("/api/enrich", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // Force live TCG liquidity + live PSA-10 sold comps (paginated).
+        // Force live TCG liquidity + live PSA-9/PSA-10 sold comps (paginated).
         body: JSON.stringify({
           productId,
           subType,
           force: true,
           forceGraded: true,
-          grades: [10],
+          grades: [10, 9],
         }),
       });
 
@@ -101,28 +115,12 @@ export function RefreshLiveButton({ productId, subType }: { productId: number; s
             if (event.error) gradedError = event.error;
             const withComps = (event.graded ?? []).filter((g) => (g.sampleSize ?? 0) > 0);
             gradedCount = withComps.length;
-            if (gradedError) {
-              setMsg(
-                `Liquidity ${liquidityScore ?? "—"} — PSA scrape failed: ${gradedError}`,
-              );
-            } else {
-              setMsg(
-                `Live: liquidity ${liquidityScore ?? "—"}, ${gradedCount} graded comps`,
-              );
-            }
+            setMsg(gradedStatus(liquidityScore, gradedCount, gradedError));
             router.refresh();
           }
 
           if (event.type === "done") {
-            if (gradedError) {
-              setMsg(
-                `Liquidity ${liquidityScore ?? "—"} ok — PSA scrape timed out or failed, retry`,
-              );
-            } else {
-              setMsg(
-                `Live: liquidity ${liquidityScore ?? "—"}, ${gradedCount} graded comps`,
-              );
-            }
+            setMsg(gradedStatus(liquidityScore, gradedCount, gradedError));
           }
         }
       }

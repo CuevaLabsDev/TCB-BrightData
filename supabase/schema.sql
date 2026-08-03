@@ -111,9 +111,43 @@ create table if not exists liquidity (
   sold_velocity       numeric(12,2),               -- qty sold / day
   bid_ask_spread_pct  numeric(10,2),               -- (low active - last sold)/last sold
   liquidity_score     numeric(6,2),                -- 0-100 composite
+  sellers             integer,
+  consumption_rate    numeric(12,2),               -- sold qty / day
+  replenishment_rate  numeric(12,2),               -- new listing qty / day (snapshot delta)
+  absorption_ratio    numeric(12,4),               -- consumption / replenishment
   raw                 jsonb,
   primary key (product_id, sub_type, source)
 );
+-- Additive columns for warehouses created before absorption fields existed.
+alter table liquidity add column if not exists sellers integer;
+alter table liquidity add column if not exists consumption_rate numeric(12,2);
+alter table liquidity add column if not exists replenishment_rate numeric(12,2);
+alter table liquidity add column if not exists absorption_ratio numeric(12,4);
+
+-- Daily (or on-demand) depth/velocity history for consumption vs replenishment.
+create table if not exists liquidity_snapshots (
+  id                  bigserial primary key,
+  product_id          integer not null,
+  sub_type            text    not null default 'Normal',
+  source              text    not null default 'tcgplayer',
+  as_of               timestamptz not null default now(),
+  active_listings     integer,
+  total_quantity      integer,
+  sellers             integer,
+  sold_velocity       numeric(12,2),
+  total_qty_sold_90d  integer,
+  bid_ask_spread_pct  numeric(10,2),
+  liquidity_score     numeric(6,2),
+  listings_delta      integer,
+  qty_delta           integer,
+  consumption_rate    numeric(12,2),
+  replenishment_rate  numeric(12,2),
+  absorption_ratio    numeric(12,4)
+);
+create index if not exists liq_snap_product_asof
+  on liquidity_snapshots (product_id, sub_type, as_of desc);
+create index if not exists liq_asof_idx on liquidity (as_of);
+create index if not exists liq_score_idx on liquidity (liquidity_score desc nulls last);
 
 -- ---------------------------------------------------------------------------
 -- Graded (PSA) comps + raw -> graded spread  (the alt-asset alpha)
@@ -369,6 +403,7 @@ alter table products enable row level security;
 alter table daily_prices enable row level security;
 alter table price_windows enable row level security;
 alter table liquidity enable row level security;
+alter table liquidity_snapshots enable row level security;
 alter table graded_comps enable row level security;
 alter table creators enable row level security;
 alter table posts enable row level security;

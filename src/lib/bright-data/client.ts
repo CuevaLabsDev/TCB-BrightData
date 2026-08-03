@@ -179,5 +179,6 @@ export function brightDataStatus() {
     configured: hasBrightData(),
     serpZone: serpZone(),
     unlockerZone: unlockerZone(),
+    asyncUnlockerZone: process.env.BRIGHT_DATA_UNLOCKER_ASYNC_ZONE || null,
   };
 }
