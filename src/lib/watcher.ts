@@ -224,7 +224,7 @@ export async function runWatcher(opts: { discover?: boolean } = {}): Promise<Wat
     { product_id: number; name: string; mult: number; raw: number; psa10: number; score: number | null }[]
   >`
     select distinct on (gc.product_id) gc.product_id, p.name,
-           gc.grade_multiple as mult, gc.raw_market as raw, gc.avg_sold as psa10,
+           gc.grade_multiple as mult, gc.raw_market as raw, gc.last_sold as psa10,
            l.liquidity_score as score
     from graded_comps gc
     join products p on p.product_id = gc.product_id

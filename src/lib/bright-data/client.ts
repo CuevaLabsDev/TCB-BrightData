@@ -76,11 +76,38 @@ async function rawRequest(
     signal: AbortSignal.timeout(opts.timeoutMs ?? 60_000),
   });
 
+  const text = await res.text().catch(() => "");
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
     throw new Error(`Bright Data ${zone} failed (${res.status}): ${text.slice(0, 300)}`);
   }
-  return res.text();
+
+  // format:"json" wraps the upstream response; surface Unlocker failures clearly
+  // instead of returning empty/opaque bodies that parse as zero comps.
+  if ((opts.format ?? "raw") === "json") {
+    try {
+      const wrapped = JSON.parse(text) as {
+        status_code?: number;
+        body?: string;
+        headers?: Record<string, string>;
+      };
+      const brdError =
+        wrapped.headers?.["x-brd-error"] ?? wrapped.headers?.["x-brd-error-code"];
+      if (brdError || (wrapped.status_code && wrapped.status_code >= 400)) {
+        throw new Error(
+          `Bright Data ${zone} upstream ${wrapped.status_code ?? "?"}: ${brdError ?? text.slice(0, 200)}`,
+        );
+      }
+      if (typeof wrapped.body === "string") return wrapped.body;
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith("Bright Data")) throw e;
+      // fall through — caller may want the raw JSON string
+    }
+  }
+
+  if (!text.trim()) {
+    throw new Error(`Bright Data ${zone} returned an empty body for ${url.slice(0, 120)}`);
+  }
+  return text;
 }
 
 /** Low-level access to the Web Unlocker zone for arbitrary GET/POST JSON APIs. */
@@ -116,8 +143,10 @@ export async function unlockPage(
   url: string,
   opts: { country?: string; timeoutMs?: number } = {},
 ): Promise<string> {
+  // Prefer format:"json" so Unlocker wait/rate-limit failures surface as
+  // x-brd-error instead of an empty raw body that looks like "no comps".
   return rawRequest(unlockerZone(), url, {
-    format: "raw",
+    format: "json",
     country: opts.country ?? "us",
     timeoutMs: opts.timeoutMs,
   });

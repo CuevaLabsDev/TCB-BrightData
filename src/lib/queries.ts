@@ -336,7 +336,7 @@ export async function getBullishCreatorImpact(
 export async function getGradedComps(productId: number): Promise<GradedComp[]> {
   const rows = await sql`
     select distinct on (grade) product_id, grader, grade, sample_size, avg_sold,
-      last_sold, raw_market, grade_multiple, as_of
+      last_sold, raw_market, grade_multiple, sold_per_day, sold_per_month, as_of
     from graded_comps where product_id = ${productId}
     order by grade desc, as_of desc
   `;
@@ -349,6 +349,8 @@ export async function getGradedComps(productId: number): Promise<GradedComp[]> {
     lastSold: num(r.last_sold),
     rawMarket: num(r.raw_market),
     gradeMultiple: num(r.grade_multiple),
+    soldPerDay: num(r.sold_per_day),
+    soldPerMonth: num(r.sold_per_month),
     asOf: toIsoTimestamp(r.as_of),
   }));
 }
@@ -413,7 +415,7 @@ export async function getGradeArbitrageBoard(limit = 12): Promise<GradeArbRow[]>
   const rows = await sql`
     select distinct on (gc.product_id)
       gc.product_id, p.name, g.name as set_name,
-      gc.raw_market, gc.avg_sold as psa10, gc.grade_multiple, gc.sample_size,
+      gc.raw_market, gc.last_sold as psa10, gc.grade_multiple, gc.sample_size,
       l.liquidity_score
     from graded_comps gc
     join products p on p.product_id = gc.product_id
@@ -542,7 +544,7 @@ export async function getSetupCandidates(
     ),
     gc10 as (
       select distinct on (product_id)
-        product_id, avg_sold as psa10, grade_multiple, sample_size
+        product_id, last_sold as psa10, grade_multiple, sample_size
       from graded_comps
       where grade = 10
       order by product_id, as_of desc

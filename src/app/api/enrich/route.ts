@@ -4,15 +4,16 @@ import { enrichGraded, enrichLiquidity } from "@/lib/bright-data/enrich";
 import { rateLimit } from "@/lib/rate-limit";
 import type { GradedComp, Liquidity } from "@/lib/types";
 
-export const maxDuration = 120;
+/** Multi-page eBay sold scrapes after TCG need headroom. */
+export const maxDuration = 300;
 
 const ENRICH_LIMIT = 8;
 const ENRICH_WINDOW_MS = 10 * 60 * 1000;
 /** Liquidity moves fast — short TTL when force is false. */
 const LIQUIDITY_FRESH_MS = 60 * 60 * 1000;
 /**
- * Graded multiples move slowly. Even on a forced live refresh we reuse warehouse
- * PSA comps inside this window so the button isn't blocked on eBay HTML.
+ * Graded multiples move slowly. Reuse warehouse PSA comps inside this window
+ * unless forceGraded is set.
  */
 const GRADED_FRESH_MS = 6 * 60 * 60 * 1000;
 
@@ -29,13 +30,12 @@ const GRADED_FRESH_MS = 6 * 60 * 60 * 1000;
  *
  * Streams NDJSON:
  *   { type: "liquidity", cached?, card, liquidity }
- *   { type: "graded", cached?, graded }
+ *   { type: "graded", cached?, graded, error? }
  *   { type: "done" }
  *   { type: "error", error }
  *
- * Live refresh sends force:true + forceGraded:false so liquidity is always
- * fresh while graded uses the 6h warehouse cache (or a single PSA-10 Unlocker
- * call when stale). Dual parallel eBay Unlocker calls contend on the zone.
+ * Liquidity then graded run sequentially so Unlocker zone contention does not
+ * abort the whole refresh. Graded failures are isolated when liquidity succeeded.
  */
 export async function POST(req: Request) {
   if (!rateLimit(req, "enrich", { limit: ENRICH_LIMIT, windowMs: ENRICH_WINDOW_MS })) {
@@ -94,6 +94,8 @@ export async function POST(req: Request) {
         controller.enqueue(encoder.encode(`${JSON.stringify(obj)}\n`));
       };
 
+      let liquidityOk = false;
+
       try {
         const [storedLiq, storedGraded] = await Promise.all([
           getLiquidity(productId),
@@ -106,8 +108,6 @@ export async function POST(req: Request) {
           storedLiq[0];
         const liqFresh = !force && isFresh(liqRow?.asOf, LIQUIDITY_FRESH_MS);
 
-        // Prefer warehouse graded unless forceGraded. Require a fresh PSA-10
-        // (or whatever the highest requested grade is) inside GRADED_FRESH_MS.
         const primaryGrade = Math.max(...grades);
         const primaryStored = storedGraded.find((g) => g.grade === primaryGrade);
         const gradedFresh =
@@ -115,82 +115,120 @@ export async function POST(req: Request) {
           wantGraded &&
           isFresh(primaryStored?.asOf, GRADED_FRESH_MS);
 
-        const tasks: Promise<void>[] = [];
-
-        if (liqFresh && liqRow) {
+        // --- Liquidity first (never parallel with eBay) ---
+        try {
+          if (liqFresh && liqRow) {
+            send({
+              type: "liquidity",
+              cached: true,
+              card: cardPayload,
+              liquidity: mapStoredLiquidity(liqRow),
+            });
+            liquidityOk = true;
+          } else {
+            const liquidity = await enrichLiquidity(card);
+            send({
+              type: "liquidity",
+              cached: false,
+              card: cardPayload,
+              liquidity: {
+                score: liquidity.score,
+                activeListings: liquidity.activeListings,
+                sellers: liquidity.sellers,
+                weeklyQtySold: liquidity.weeklyQtySold,
+                soldPerDay: liquidity.soldPerDay,
+                bidAskSpreadPct: liquidity.bidAskSpreadPct,
+              },
+            });
+            liquidityOk = true;
+          }
+        } catch (e) {
+          // Liquidity failure is fatal only if we also can't do graded later.
           send({
-            type: "liquidity",
-            cached: true,
-            card: cardPayload,
-            liquidity: mapStoredLiquidity(liqRow),
+            type: "error",
+            error: e instanceof Error ? e.message : "liquidity enrichment failed",
           });
-        } else {
-          tasks.push(
-            enrichLiquidity(card).then((liquidity) => {
-              send({
-                type: "liquidity",
-                cached: false,
-                card: cardPayload,
-                liquidity: {
-                  score: liquidity.score,
-                  activeListings: liquidity.activeListings,
-                  sellers: liquidity.sellers,
-                  weeklyQtySold: liquidity.weeklyQtySold,
-                  soldPerDay: liquidity.soldPerDay,
-                  bidAskSpreadPct: liquidity.bidAskSpreadPct,
-                },
-              });
-            }),
-          );
+          return;
         }
 
+        // --- Graded second; failures isolated ---
         if (!wantGraded) {
-          // Sealed: clear any prior bogus PSA rows, then return empty.
           if (card.isSealed) {
             await enrichGraded(card, []);
           }
           send({ type: "graded", cached: true, graded: [] });
         } else if (gradedFresh) {
-          // Return all stored grades we have (9+10) so the UI stays rich even
-          // when live only refreshes PSA-10 on a miss.
           send({
             type: "graded",
             cached: true,
             graded: storedGraded.map(mapStoredGraded),
           });
         } else {
-          tasks.push(
-            enrichGraded(card, grades).then((graded) => {
-              // Merge live rows with any still-fresh warehouse grades we didn't
-              // re-scrape (e.g. live PSA-10 + cached PSA-9).
-              const liveGrades = new Set(graded.map((g) => g.grade));
-              const merged = [
-                ...graded.map((g) => ({
-                  grade: g.grade,
-                  median: g.scan.median,
-                  sampleSize: g.scan.count,
-                  gradeMultiple: g.gradeMultiple,
-                })),
-                ...storedGraded
-                  .filter((g) => !liveGrades.has(g.grade))
-                  .map(mapStoredGraded),
-              ].sort((a, b) => b.grade - a.grade);
-              send({
-                type: "graded",
-                cached: false,
-                graded: merged,
-              });
-            }),
-          );
+          try {
+            const graded = await enrichGraded(card, grades);
+            const liveGrades = new Set(graded.map((g) => g.grade));
+            // Live path ran: do not re-attach stale warehouse rows for grades we
+            // requested but got 0 comps for — surface explicit empties.
+            const livePayload = grades.map((grade) => {
+              const hit = graded.find((g) => g.grade === grade);
+              if (hit) {
+                return {
+                  grade: hit.grade,
+                  market: hit.scan.market ?? hit.scan.median,
+                  median: hit.scan.median,
+                  sampleSize: hit.scan.count,
+                  gradeMultiple: hit.gradeMultiple,
+                  soldPerDay: hit.scan.soldPerDay,
+                  soldPerMonth: hit.scan.soldPerMonth,
+                };
+              }
+              return {
+                grade,
+                market: null,
+                median: null,
+                sampleSize: 0,
+                gradeMultiple: null,
+                soldPerDay: null,
+                soldPerMonth: null,
+              };
+            });
+            const merged = [
+              ...livePayload,
+              ...storedGraded
+                .filter((g) => !liveGrades.has(g.grade) && !grades.includes(g.grade))
+                .map(mapStoredGraded),
+            ].sort((a, b) => b.grade - a.grade);
+            send({
+              type: "graded",
+              cached: false,
+              graded: merged,
+            });
+          } catch (e) {
+            send({
+              type: "graded",
+              cached: false,
+              graded: storedGraded.map(mapStoredGraded),
+              error: e instanceof Error ? e.message : "PSA scrape failed",
+            });
+          }
         }
 
-        await Promise.all(tasks);
         send({ type: "done" });
       } catch (e) {
-        send({
-          type: "error",
-          error: e instanceof Error ? e.message : "enrichment failed",
-        });
+        if (!liquidityOk) {
+          send({
+            type: "error",
+            error: e instanceof Error ? e.message : "enrichment failed",
+          });
+        } else {
+          send({
+            type: "graded",
+            cached: false,
+            graded: [],
+            error: e instanceof Error ? e.message : "enrichment failed",
+          });
+          send({ type: "done" });
+        }
       } finally {
         controller.close();
       }
@@ -226,8 +264,11 @@ function mapStoredLiquidity(liq: Liquidity) {
 function mapStoredGraded(g: GradedComp) {
   return {
     grade: g.grade,
+    market: g.lastSold,
     median: g.lastSold,
     sampleSize: g.sampleSize,
     gradeMultiple: g.gradeMultiple,
+    soldPerDay: g.soldPerDay,
+    soldPerMonth: g.soldPerMonth,
   };
 }

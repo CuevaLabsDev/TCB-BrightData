@@ -175,18 +175,29 @@ export async function enrichGraded(
 
   for (const grade of grades) {
     const scan = await scanGradedSold(q, grade);
+    // Explicit empty: caller surfaces sampleSize 0 instead of reusing stale rows.
     if (scan.count === 0) continue;
+
+    const market = scan.market ?? scan.median;
     const gradeMultiple =
-      raw && scan.median ? Math.round((scan.median / raw) * 100) / 100 : null;
+      raw && market ? Math.round((market / raw) * 100) / 100 : null;
 
     await sql`
       insert into graded_comps
         (product_id, grader, grade, source, as_of, sample_size, avg_sold,
-         last_sold, low_sold, high_sold, raw_market, grade_multiple, raw)
+         last_sold, low_sold, high_sold, raw_market, grade_multiple,
+         sold_per_day, sold_per_month, raw)
       values
         (${card.productId}, 'PSA', ${grade}, 'ebay', now(),
-         ${scan.count}, ${scan.avg}, ${scan.median}, ${scan.low}, ${scan.high},
-         ${raw}, ${gradeMultiple}, ${sql.json({ query: `${q} PSA ${grade}` } as never)})
+         ${scan.count}, ${scan.avg}, ${market}, ${scan.low}, ${scan.high},
+         ${raw}, ${gradeMultiple}, ${scan.soldPerDay}, ${scan.soldPerMonth},
+         ${sql.json({
+           query: `${q} PSA ${grade}`,
+           lookbackDays: scan.lookbackDays,
+           datedCount: scan.datedCount,
+           pagesFetched: scan.pagesFetched,
+           market,
+         } as never)})
     `;
 
     out.push({ productId: card.productId, grade, scan, rawMarket: raw, gradeMultiple });

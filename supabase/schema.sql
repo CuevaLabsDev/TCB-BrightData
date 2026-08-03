@@ -126,14 +126,19 @@ create table if not exists graded_comps (
   source         text not null default 'ebay',
   as_of          timestamptz not null default now(),
   sample_size    integer,
-  avg_sold       numeric(12,2),
-  last_sold      numeric(12,2),
+  avg_sold       numeric(12,2),                    -- mean of outlier-filtered solds
+  last_sold      numeric(12,2),                    -- converged market = trimmed median
   low_sold       numeric(12,2),
   high_sold      numeric(12,2),
   raw_market     numeric(12,2),                    -- raw NM market at comp time
-  grade_multiple numeric(10,2),                    -- avg_sold / raw_market
+  grade_multiple numeric(10,2),                    -- last_sold (median) / raw_market
+  sold_per_day   numeric(12,2),                    -- eBay PSA sold velocity
+  sold_per_month numeric(12,2),                    -- sold_per_day * 30
   raw            jsonb
 );
+-- Additive columns for warehouses created before velocity fields existed.
+alter table graded_comps add column if not exists sold_per_day numeric(12,2);
+alter table graded_comps add column if not exists sold_per_month numeric(12,2);
 create index if not exists graded_product_idx on graded_comps (product_id);
 create index if not exists graded_asof_idx on graded_comps (as_of desc);
 

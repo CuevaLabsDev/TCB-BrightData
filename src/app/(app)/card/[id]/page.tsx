@@ -160,26 +160,51 @@ export default async function CardPage({
                 </div>
                 <div className="rounded-lg border border-sky-500/20 bg-sky-500/5 p-3 text-center">
                   <p className="text-[11px] uppercase tracking-wide text-sky-400/80">PSA 9</p>
-                  <p className="mt-1 text-lg font-semibold text-white">{formatCurrency(psa9?.avgSold)}</p>
+                  <p className="mt-1 text-lg font-semibold text-white">
+                    {formatCurrency(psa9?.lastSold ?? psa9?.avgSold)}
+                  </p>
                   {psa9?.gradeMultiple && <p className="text-xs text-zinc-500">{psa9.gradeMultiple}×</p>}
                 </div>
                 <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 text-center">
                   <p className="text-[11px] uppercase tracking-wide text-emerald-400/80">PSA 10</p>
-                  <p className="mt-1 text-lg font-semibold text-white">{formatCurrency(psa10?.avgSold)}</p>
+                  <p className="mt-1 text-lg font-semibold text-white">
+                    {formatCurrency(psa10?.lastSold ?? psa10?.avgSold)}
+                  </p>
                   {psa10?.gradeMultiple && (
                     <p className="text-xs font-medium text-emerald-400">{psa10.gradeMultiple}×</p>
                   )}
                 </div>
               </div>
               {psa10 && (
-                <div className="rounded-lg border border-white/10 bg-zinc-900/40 p-3 text-sm text-zinc-300">
-                  <span className="font-medium text-white">Signal: </span>
-                  {psa10.gradeMultiple && psa10.gradeMultiple >= 2.5 && (liq?.liquidityScore ?? 0) >= 40
-                    ? `Strong submit — ${psa10.gradeMultiple}× multiple on a liquid card (n=${psa10.sampleSize} sold).`
-                    : psa10.gradeMultiple && psa10.gradeMultiple >= 2.5
-                      ? `Attractive ${psa10.gradeMultiple}× multiple, but watch liquidity (${band.label}).`
-                      : `Modest ${psa10.gradeMultiple ?? "—"}× multiple — grading premium thin; hold raw.`}
-                </div>
+                <>
+                  <div className="grid grid-cols-3 gap-3 text-sm">
+                    <Metric
+                      label="Sold / day"
+                      value={
+                        psa10.soldPerDay === null || psa10.soldPerDay === undefined
+                          ? "—"
+                          : `${psa10.soldPerDay.toFixed(2)}`
+                      }
+                    />
+                    <Metric
+                      label="Sold / month"
+                      value={
+                        psa10.soldPerMonth === null || psa10.soldPerMonth === undefined
+                          ? "—"
+                          : `${psa10.soldPerMonth.toFixed(1)}`
+                      }
+                    />
+                    <Metric label="Comps (n)" value={formatNumber(psa10.sampleSize)} />
+                  </div>
+                  <div className="rounded-lg border border-white/10 bg-zinc-900/40 p-3 text-sm text-zinc-300">
+                    <span className="font-medium text-white">Signal: </span>
+                    {psa10.gradeMultiple && psa10.gradeMultiple >= 2.5 && (liq?.liquidityScore ?? 0) >= 40
+                      ? `Strong submit — ${psa10.gradeMultiple}× multiple on a liquid card (n=${psa10.sampleSize} sold).`
+                      : psa10.gradeMultiple && psa10.gradeMultiple >= 2.5
+                        ? `Attractive ${psa10.gradeMultiple}× multiple, but watch liquidity (${band.label}).`
+                        : `Modest ${psa10.gradeMultiple ?? "—"}× multiple — grading premium thin; hold raw.`}
+                  </div>
+                </>
               )}
             </div>
           )}

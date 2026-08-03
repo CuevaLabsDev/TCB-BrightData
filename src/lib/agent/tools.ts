@@ -194,7 +194,9 @@ export const agentTools = {
                 : undefined,
         gradedContext: comps.slice(0, 1).map((g) => ({
           grade: g.grade,
-          medianSold: g.avgSold,
+          medianSold: g.lastSold ?? g.avgSold,
+          soldPerDay: g.soldPerDay,
+          soldPerMonth: g.soldPerMonth,
           gradeMultiple: g.gradeMultiple,
         })),
       };
@@ -335,9 +337,11 @@ export const agentTools = {
         rawMarket: card.market,
         gradedComps: comps.map((g) => ({
           grade: g.grade,
-          medianSold: g.avgSold,
+          medianSold: g.lastSold ?? g.avgSold,
           sampleSize: g.sampleSize,
           gradeMultiple: g.gradeMultiple,
+          soldPerDay: g.soldPerDay,
+          soldPerMonth: g.soldPerMonth,
         })),
         liquidity: liq[0]
           ? { score: liq[0].liquidityScore, soldVelocity: liq[0].soldVelocity }
@@ -505,9 +509,11 @@ export const agentTools = {
           bidAskSpreadPct: liquidity.bidAskSpreadPct,
           gradedComps: graded.map((g) => ({
             grade: g.grade,
-            medianSold: g.scan.median,
+            medianSold: g.scan.market ?? g.scan.median,
             sampleSize: g.scan.count,
             gradeMultiple: g.gradeMultiple,
+            soldPerDay: g.scan.soldPerDay,
+            soldPerMonth: g.scan.soldPerMonth,
           })),
           ...(card.isSealed
             ? { gradedNote: "Sealed product — PSA grade comps skipped" }

@@ -63,10 +63,16 @@ export interface GradedComp {
   grader: string;
   grade: number;
   sampleSize: number | null;
+  /** Mean of outlier-filtered eBay sold prices. */
   avgSold: number | null;
+  /** Converged PSA market = trimmed median of sold prices. */
   lastSold: number | null;
   rawMarket: number | null;
   gradeMultiple: number | null;
+  /** eBay PSA solds per day over the dated lookback window. */
+  soldPerDay: number | null;
+  /** Approximate monthly velocity (soldPerDay * 30). */
+  soldPerMonth: number | null;
   asOf: string;
 }
 
