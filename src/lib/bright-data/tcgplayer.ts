@@ -110,7 +110,7 @@ export async function getTcgListings(
   productId: number,
   maxPages = 1,
 ): Promise<{ total: number; listings: TcgListing[] }> {
-  const size = 25;
+  const size = 50;
   const all: TcgListing[] = [];
   let total = 0;
 

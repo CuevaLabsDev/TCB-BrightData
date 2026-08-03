@@ -32,7 +32,7 @@ on:
       concurrency:
         description: "Parallel cards"
         required: false
-        default: "8"
+        default: "6"
 
 jobs:
   refresh:
@@ -74,7 +74,7 @@ jobs:
           LIMIT: ${{ github.event.inputs.limit || '800' }}
           MAX_MARKET: ${{ github.event.inputs.max_market || '2' }}
           MODE: ${{ github.event.inputs.mode || 'sync' }}
-          CONCURRENCY: ${{ github.event.inputs.concurrency || '8' }}
+          CONCURRENCY: ${{ github.event.inputs.concurrency || '6' }}
         run: |
           node scripts/bulk-liquidity.mjs \
             --max-market "$MAX_MARKET" \

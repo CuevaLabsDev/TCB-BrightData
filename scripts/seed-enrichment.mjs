@@ -41,7 +41,7 @@ async function tcgDetails(pid) {
   catch { return null; }
 }
 async function tcgListings(pid) {
-  const body = JSON.stringify({ filters: { term: { sellerStatus: "Live" }, range: { quantity: { gte: 1 } }, exclude: { channelExclusion: 0 } }, from: 0, size: 25, sort: { field: "price+shipping", order: "asc" }, context: { shippingCountry: "US", cart: {} }, aggregations: ["listingType"] });
+  const body = JSON.stringify({ filters: { term: { sellerStatus: "Live" }, range: { quantity: { gte: 1 } }, exclude: { channelExclusion: 0 } }, from: 0, size: 50, sort: { field: "price+shipping", order: "asc" }, context: { shippingCountry: "US", cart: {} }, aggregations: ["listingType"] });
   const t = await bd(`https://mp-search-api.tcgplayer.com/v1/product/${pid}/listings`, { method: "POST", body, headers: tcgHeaders(pid) });
   try { const inner = (JSON.parse(t).results || [{}])[0]; const ls = inner.results || []; return { total: n(inner.totalResults) || ls.length, listings: ls, qty: ls.reduce((s, l) => s + (n(l.quantity) || 0), 0) }; }
   catch { return { total: 0, listings: [], qty: 0 }; }

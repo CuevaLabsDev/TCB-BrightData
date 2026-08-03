@@ -60,7 +60,7 @@ console.log("\n[C] POST v1/product/{id}/listings (depth, page 1)");
 try {
   const listingBody = JSON.stringify({
     filters: { term: { sellerStatus: "Live" }, range: { quantity: { gte: 1 } }, exclude: { channelExclusion: 0 } },
-    from: 0, size: 25, sort: { field: "price+shipping", order: "asc" },
+    from: 0, size: 50, sort: { field: "price+shipping", order: "asc" },
     context: { shippingCountry: "US", cart: {} }, aggregations: ["listingType"],
   });
   const r = await bd(`https://mp-search-api.tcgplayer.com/v1/product/${PID}/listings`, { method: "POST", body: listingBody });

@@ -265,7 +265,7 @@ async function tcgListings(pid) {
       exclude: { channelExclusion: 0 },
     },
     from: 0,
-    size: 25,
+    size: 50,
     sort: { field: "price+shipping", order: "asc" },
     context: { shippingCountry: "US", cart: {} },
     aggregations: ["listingType"],
