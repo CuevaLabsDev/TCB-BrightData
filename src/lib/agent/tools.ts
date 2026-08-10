@@ -19,7 +19,14 @@ import { enrichGraded, enrichLiquidity } from "@/lib/bright-data/enrich";
 import { detectMovementSignals } from "@/lib/price-intelligence/movement";
 import type { Liquidity } from "@/lib/types";
 
-function pickLiquidity(rows: Liquidity[]): Liquidity | null {
+function pickLiquidity(rows: Liquidity[], subType?: string): Liquidity | null {
+  if (subType) {
+    return (
+      rows.find((l) => l.subType === subType && l.source === "tcgplayer") ??
+      rows.find((l) => l.subType === subType) ??
+      null
+    );
+  }
   return rows.find((l) => l.source === "tcgplayer") ?? rows[0] ?? null;
 }
 
@@ -136,15 +143,15 @@ export const agentTools = {
         getGradedComps(card.productId),
       ]);
 
-      let liquidityRows = await getLiquidity(card.productId);
+      let liquidityRows = await getLiquidity(card.productId, card.subType);
       let refreshed = false;
       const liveRefreshAllowed = allowsLiveRefresh(experimental_context);
       if (refreshLive && liveRefreshAllowed && liquidityRows.length === 0 && hasBrightData()) {
         await enrichLiquidity(card);
-        liquidityRows = await getLiquidity(card.productId);
+        liquidityRows = await getLiquidity(card.productId, card.subType);
         refreshed = true;
       }
-      const liq = pickLiquidity(liquidityRows);
+      const liq = pickLiquidity(liquidityRows, card.subType);
 
       const markets = history
         .map((p) => p.market)
@@ -327,13 +334,15 @@ export const agentTools = {
     execute: async ({ query, productId }) => {
       const card = await resolveCard(query, productId);
       if (!card) return { found: false };
-      const [comps, liq] = await Promise.all([
+      const [comps, liqRows] = await Promise.all([
         getGradedComps(card.productId),
-        getLiquidity(card.productId),
+        getLiquidity(card.productId, card.subType),
       ]);
+      const liq = pickLiquidity(liqRows, card.subType);
       return {
         found: true,
         card: card.name,
+        subType: card.subType,
         rawMarket: card.market,
         gradedComps: comps.map((g) => ({
           grade: g.grade,
@@ -343,8 +352,8 @@ export const agentTools = {
           soldPerDay: g.soldPerDay,
           soldPerMonth: g.soldPerMonth,
         })),
-        liquidity: liq[0]
-          ? { score: liq[0].liquidityScore, soldVelocity: liq[0].soldVelocity }
+        liquidity: liq
+          ? { score: liq.liquidityScore, soldVelocity: liq.soldVelocity, subType: liq.subType }
           : null,
         note:
           comps.length === 0
@@ -364,12 +373,14 @@ export const agentTools = {
     execute: async ({ query, productId }) => {
       const card = await resolveCard(query, productId);
       if (!card) return { found: false };
-      const liq = await getLiquidity(card.productId);
+      const liq = await getLiquidity(card.productId, card.subType);
       return {
         found: true,
         card: card.name,
+        subType: card.subType,
         liquidity: liq.map((l) => ({
           source: l.source,
+          subType: l.subType,
           score: l.liquidityScore,
           soldVelocity: l.soldVelocity,
           activeListings: l.activeListings,
@@ -382,7 +393,7 @@ export const agentTools = {
         })),
         note:
           liq.length === 0
-            ? "No stored liquidity yet — daily preload may not have reached this card. Offer a live Bright Data refresh only if the user wants fresh liquidity."
+            ? "No stored liquidity yet — daily preload may not have reached this printing. Offer a live Bright Data refresh only if the user wants fresh liquidity."
             : undefined,
       };
     },

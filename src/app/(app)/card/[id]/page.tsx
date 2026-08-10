@@ -42,7 +42,7 @@ export default async function CardPage({
   const [variants, history, liquidity, graded, posts] = await Promise.all([
     getCardVariants(productId),
     getPriceHistory(productId, card.subType, 180),
-    getLiquidity(productId),
+    getLiquidity(productId, card.subType),
     getGradedComps(productId),
     sql`
       select po.platform, c.handle, po.sentiment, po.signal, po.summary,
@@ -53,7 +53,11 @@ export default async function CardPage({
     `,
   ]);
 
-  const liq = liquidity[0];
+  // Grain is (product_id, sub_type, source) — match the selected printing.
+  const liq =
+    liquidity.find((row) => row.subType === card.subType && row.source === "tcgplayer") ??
+    liquidity.find((row) => row.subType === card.subType) ??
+    liquidity[0];
   const band = liquidityBand(liq?.liquidityScore);
   const psa10 = graded.find((g) => g.grade === 10);
   const psa9 = graded.find((g) => g.grade === 9);

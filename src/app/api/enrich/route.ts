@@ -98,7 +98,7 @@ export async function POST(req: Request) {
 
       try {
         const [storedLiq, storedGraded] = await Promise.all([
-          getLiquidity(productId),
+          getLiquidity(productId, card.subType),
           wantGraded ? getGradedComps(productId) : Promise.resolve([] as GradedComp[]),
         ]);
 

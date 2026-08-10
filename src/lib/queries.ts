@@ -275,10 +275,22 @@ export async function getSetCards(
 
 // ---- Liquidity / graded / social / signals / memory --------------------
 
-export async function getLiquidity(productId: number): Promise<Liquidity[]> {
-  const rows = await sql`
-    select * from liquidity where product_id = ${productId} order by source
-  `;
+/** Liquidity rows for a product. Pass subType to scope to one printing (PK grain). */
+export async function getLiquidity(
+  productId: number,
+  subType?: string,
+): Promise<Liquidity[]> {
+  const rows = subType
+    ? await sql`
+        select * from liquidity
+        where product_id = ${productId} and sub_type = ${subType}
+        order by (source = 'tcgplayer') desc, as_of desc
+      `
+    : await sql`
+        select * from liquidity
+        where product_id = ${productId}
+        order by (source = 'tcgplayer') desc, as_of desc, sub_type
+      `;
   return rows.map((r) => ({
     productId: Number(r.product_id),
     subType: String(r.sub_type),
