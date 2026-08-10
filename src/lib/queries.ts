@@ -6,12 +6,14 @@ import type {
   CreatorPost,
   GradedComp,
   Liquidity,
+  ListingLadder,
   MarketMemory,
   MarketStats,
   PricePoint,
   SetSummary,
   Signal,
 } from "./types";
+import { parseStoredLadder } from "./listing-ladder";
 
 const num = (v: unknown): number | null =>
   v === null || v === undefined ? null : Number(v);
@@ -291,23 +293,27 @@ export async function getLiquidity(
         where product_id = ${productId}
         order by (source = 'tcgplayer') desc, as_of desc, sub_type
       `;
-  return rows.map((r) => ({
-    productId: Number(r.product_id),
-    subType: String(r.sub_type),
-    source: String(r.source),
-    activeListings: num(r.active_listings),
-    totalQuantity: num(r.total_quantity),
-    avgDailyQtySold: num(r.avg_daily_qty_sold),
-    totalQtySold90d: num(r.total_qty_sold_90d),
-    soldVelocity: num(r.sold_velocity),
-    bidAskSpreadPct: num(r.bid_ask_spread_pct),
-    liquidityScore: num(r.liquidity_score),
-    sellers: num(r.sellers),
-    consumptionRate: num(r.consumption_rate),
-    replenishmentRate: num(r.replenishment_rate),
-    absorptionRatio: num(r.absorption_ratio),
-    asOf: toIsoTimestamp(r.as_of),
-  }));
+  return rows.map((r) => {
+    const ladder = parseStoredLadder(r.raw) as ListingLadder | null;
+    return {
+      productId: Number(r.product_id),
+      subType: String(r.sub_type),
+      source: String(r.source),
+      activeListings: num(r.active_listings),
+      totalQuantity: num(r.total_quantity),
+      avgDailyQtySold: num(r.avg_daily_qty_sold),
+      totalQtySold90d: num(r.total_qty_sold_90d),
+      soldVelocity: num(r.sold_velocity),
+      bidAskSpreadPct: num(r.bid_ask_spread_pct),
+      liquidityScore: num(r.liquidity_score),
+      sellers: num(r.sellers),
+      consumptionRate: num(r.consumption_rate),
+      replenishmentRate: num(r.replenishment_rate),
+      absorptionRatio: num(r.absorption_ratio),
+      asOf: toIsoTimestamp(r.as_of),
+      listingLadder: ladder,
+    };
+  });
 }
 
 export interface StoredMovement {

@@ -138,6 +138,10 @@ export async function POST(req: Request) {
                 weeklyQtySold: liquidity.weeklyQtySold,
                 soldPerDay: liquidity.soldPerDay,
                 bidAskSpreadPct: liquidity.bidAskSpreadPct,
+                buyoutUsd: liquidity.buyoutUsd,
+                buyoutQty: liquidity.buyoutQty,
+                buyoutPartial: liquidity.buyoutPartial,
+                priceGaps: liquidity.priceGaps,
               },
             });
             liquidityOk = true;
@@ -256,10 +260,14 @@ function mapStoredLiquidity(liq: Liquidity) {
   return {
     score: liq.liquidityScore,
     activeListings: liq.activeListings,
-    sellers: null as number | null,
+    sellers: liq.sellers,
     weeklyQtySold: liq.totalQtySold90d,
     soldPerDay: liq.soldVelocity,
     bidAskSpreadPct: liq.bidAskSpreadPct,
+    buyoutUsd: liq.listingLadder?.buyoutUsd ?? null,
+    buyoutQty: liq.listingLadder?.buyoutQty ?? null,
+    buyoutPartial: liq.listingLadder?.partial ?? null,
+    priceGaps: liq.listingLadder?.gaps ?? [],
   };
 }
 

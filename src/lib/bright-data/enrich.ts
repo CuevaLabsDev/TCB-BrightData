@@ -7,6 +7,10 @@ import {
 } from "./absorption";
 import { scanGradedSold, type EbayScan } from "./ebay";
 import {
+  analyzeListingLadder,
+  ladderToRaw,
+} from "@/lib/listing-ladder";
+import {
   aggregateVelocity,
   getTcgDetails,
   getTcgListings,
@@ -70,6 +74,17 @@ export interface LiquidityResult {
   replenishmentRate: number | null;
   absorptionRatio: number | null;
   topListings: { price: number; shipping: number; condition: string; seller: string; rating: number }[];
+  buyoutUsd: number;
+  buyoutQty: number;
+  buyoutPartial: boolean;
+  priceGaps: {
+    fromLanded: number;
+    toLanded: number;
+    gapUsd: number;
+    gapPct: number;
+    qtyToClear: number;
+    costToClear: number;
+  }[];
 }
 
 async function loadPriorSnapshot(
@@ -118,12 +133,19 @@ export async function enrichLiquidity(card: CardSummary): Promise<LiquidityResul
   const sellers = listingsData.sellers || details?.totalSellers || 0;
   // price_windows.market is already per sub_type.
   const market = card.market ?? details?.marketPrice;
-  const lowestAsk = listingsData.listings[0]?.price ?? details?.lowestPrice ?? null;
+  const lowestAsk =
+    listingsData.listings[0]
+      ? listingsData.listings[0].price + (listingsData.listings[0].shippingPrice || 0)
+      : details?.lowestPrice ?? null;
 
   const bidAskSpreadPct =
     lowestAsk !== null && market
       ? Math.round(((lowestAsk - market) / market) * 1000) / 10
       : null;
+
+  const ladderPartial =
+    listingsData.total > 0 && listingsData.listings.length < listingsData.total;
+  const ladder = analyzeListingLadder(listingsData.listings, { partial: ladderPartial });
 
   const baseScore = liquidityScore({
     weeklyQtySold: vel.weeks ? vel.qtySold / vel.weeks : 0,
@@ -165,6 +187,7 @@ export async function enrichLiquidity(card: CardSummary): Promise<LiquidityResul
          query: cardQueryString(card),
          baseScore,
          absorptionScoreDelta: absorption.scoreDelta,
+         listingLadder: ladderToRaw(ladder),
        } as never)})
     on conflict (product_id, sub_type, source) do update set
       as_of = excluded.as_of,
@@ -218,6 +241,10 @@ export async function enrichLiquidity(card: CardSummary): Promise<LiquidityResul
       seller: l.sellerName,
       rating: l.sellerRating,
     })),
+    buyoutUsd: ladder.buyoutUsd,
+    buyoutQty: ladder.buyoutQty,
+    buyoutPartial: ladder.partial,
+    priceGaps: ladder.gaps,
   };
 }
 

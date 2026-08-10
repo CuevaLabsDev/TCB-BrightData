@@ -44,6 +44,33 @@ export interface SetSummary {
   avgChg30d: number | null;
 }
 
+export interface ListingLadderGap {
+  fromLanded: number;
+  toLanded: number;
+  gapUsd: number;
+  gapPct: number;
+  qtyToClear: number;
+  costToClear: number;
+}
+
+export interface ListingLadderLevel {
+  landed: number;
+  qty: number;
+  cumQty: number;
+  cumCost: number;
+}
+
+export interface ListingLadder {
+  buyoutUsd: number;
+  buyoutQty: number;
+  listingRows: number;
+  lowestLanded: number | null;
+  highestLanded: number | null;
+  partial: boolean;
+  gaps: ListingLadderGap[];
+  levels: ListingLadderLevel[];
+}
+
 export interface Liquidity {
   productId: number;
   subType: string;
@@ -63,6 +90,8 @@ export interface Liquidity {
   /** consumption / replenishment — high means supply is being eaten. */
   absorptionRatio: number | null;
   asOf: string;
+  /** Ask book from listings scrape (price+shipping); null if not fetched. */
+  listingLadder: ListingLadder | null;
 }
 
 export interface GradedComp {

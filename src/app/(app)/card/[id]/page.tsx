@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import Image from "next/image";
 import { ArrowLeft, ExternalLink, Gem, Waves } from "lucide-react";
+import { ListingLadderPanel } from "@/components/listing-ladder-panel";
 import {
   getCard,
   getCardVariants,
@@ -269,7 +270,27 @@ export default async function CardPage({
                   }
                 />
                 <Metric label="Sellers" value={formatNumber(liq.sellers)} />
+                {liq.listingLadder && (
+                  <>
+                    <Metric
+                      label={liq.listingLadder.partial ? "Buyout (approx)" : "Buyout"}
+                      value={formatCurrency(liq.listingLadder.buyoutUsd)}
+                    />
+                    <Metric
+                      label="Buyout qty"
+                      value={formatNumber(liq.listingLadder.buyoutQty)}
+                    />
+                  </>
+                )}
               </div>
+              {liq.listingLadder && liq.listingLadder.levels.length > 0 ? (
+                <ListingLadderPanel ladder={liq.listingLadder} market={card.market} />
+              ) : (
+                <p className="border-t border-white/5 pt-3 text-xs text-zinc-600">
+                  Buyout + ask ladder need a listings scrape — use Refresh live to fetch the full
+                  book (price + shipping).
+                </p>
+              )}
             </div>
           )}
         </Card>

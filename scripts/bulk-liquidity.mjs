@@ -416,12 +416,67 @@ async function tcgDetails(pid) {
   }
 }
 
+function analyzeListingLadder(listings, partial) {
+  const byLanded = new Map();
+  for (const l of listings) {
+    const qty = n(l.quantity) || 0;
+    const price = n(l.price) || 0;
+    if (qty <= 0 || price <= 0) continue;
+    const landed = Math.round((price + (n(l.shippingPrice) || 0)) * 100) / 100;
+    byLanded.set(landed, (byLanded.get(landed) || 0) + qty);
+  }
+  const prices = [...byLanded.keys()].sort((a, b) => a - b);
+  const levels = [];
+  let cumQty = 0;
+  let cumCost = 0;
+  for (const landed of prices) {
+    const qty = byLanded.get(landed) || 0;
+    cumQty += qty;
+    cumCost = Math.round((cumCost + landed * qty) * 100) / 100;
+    levels.push({ landed, qty, cumQty, cumCost });
+  }
+  const gaps = [];
+  for (let i = 0; i < levels.length - 1; i++) {
+    const from = levels[i];
+    const to = levels[i + 1];
+    const gapUsd = Math.round((to.landed - from.landed) * 100) / 100;
+    const gapPct = from.landed > 0 ? Math.round((gapUsd / from.landed) * 1000) / 10 : 0;
+    if (gapPct < 15 && gapUsd < 1) continue;
+    gaps.push({
+      fromLanded: from.landed,
+      toLanded: to.landed,
+      gapUsd,
+      gapPct,
+      qtyToClear: from.cumQty,
+      costToClear: from.cumCost,
+    });
+    if (gaps.length >= 12) break;
+  }
+  const stored =
+    levels.length <= 80
+      ? levels
+      : levels.filter(
+          (_, i) => i === 0 || i === levels.length - 1 || i % Math.ceil(levels.length / 60) === 0,
+        );
+  return {
+    buyoutUsd: cumCost,
+    buyoutQty: cumQty,
+    listingRows: listings.length,
+    lowestLanded: levels[0]?.landed ?? null,
+    highestLanded: levels[levels.length - 1]?.landed ?? null,
+    partial: Boolean(partial),
+    gaps,
+    levels: stored,
+  };
+}
+
 async function tcgListings(pid, printing, maxPages = LISTINGS_MAX_PAGES) {
   let total = 0;
   let qty = 0;
   let lowest = null;
   let fetched = 0;
   const sellers = new Set();
+  const rows = [];
   const pageCap = Math.max(1, maxPages);
 
   for (let page = 0; page < pageCap; page++) {
@@ -458,16 +513,26 @@ async function tcgListings(pid, printing, maxPages = LISTINGS_MAX_PAGES) {
     } catch {
       break;
     }
-    if (page === 0 && batch.length) lowest = n(batch[0].price);
+    if (page === 0 && batch.length) {
+      const first = batch[0];
+      lowest = (n(first.price) || 0) + (n(first.shippingPrice) || 0) || n(first.price);
+    }
     for (const l of batch) {
-      qty += n(l.quantity) || 0;
+      const q = n(l.quantity) || 0;
+      qty += q;
       if (l.sellerName) sellers.add(l.sellerName);
+      rows.push({
+        price: n(l.price) || 0,
+        shippingPrice: n(l.shippingPrice) || 0,
+        quantity: q,
+      });
     }
     fetched += batch.length;
     if (batch.length < LISTINGS_PAGE_SIZE) break;
     if (total > 0 && fetched >= total) break;
   }
 
+  const partial = total > 0 && fetched < total;
   return {
     total: total || fetched,
     qty,
@@ -475,6 +540,8 @@ async function tcgListings(pid, printing, maxPages = LISTINGS_MAX_PAGES) {
     sellers: sellers.size,
     pages: Math.ceil(fetched / LISTINGS_PAGE_SIZE) || 0,
     printing: printing || null,
+    partial,
+    ladder: analyzeListingLadder(rows, partial),
   };
 }
 
@@ -727,6 +794,7 @@ async function enrichOne(row) {
          totalQuantity: totalQuantity,
          baseScore,
          absorptionScoreDelta: absorption.scoreDelta,
+         listingLadder: listings?.ladder ?? null,
        })})
     on conflict (product_id, sub_type, source) do update set
       as_of = excluded.as_of,
