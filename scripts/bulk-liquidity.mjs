@@ -11,9 +11,11 @@
  *   node scripts/bulk-liquidity.mjs --max-market 2 --stale-hours 24 --limit 500 --concurrency 8
  *   node scripts/bulk-liquidity.mjs --mode async --limit 100   # needs BRIGHT_DATA_UNLOCKER_ASYNC_ZONE
  *   node scripts/bulk-liquidity.mjs --endpoints details,sales,listings
+ *   node scripts/bulk-liquidity.mjs --from-queue              # set-ranked budgeted queue
  *
  * Env: SUPABASE_DB_URL | PIPELINE_DB_URL, BRIGHT_DATA_API_KEY,
- *      BRIGHT_DATA_UNLOCKER_ZONE [, BRIGHT_DATA_UNLOCKER_ASYNC_ZONE]
+ *      BRIGHT_DATA_TCGPLAYER_UNLOCKER_ZONE | BRIGHT_DATA_UNLOCKER_ZONE
+ *      [, BRIGHT_DATA_TCGPLAYER_UNLOCKER_ASYNC_ZONE | BRIGHT_DATA_UNLOCKER_ASYNC_ZONE]
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -47,6 +49,8 @@ const STALE_HOURS = Number(arg("stale-hours", "24"));
 const LIMIT = Number(arg("limit", "500"));
 const CONCURRENCY = Math.max(1, Number(arg("concurrency", "3")));
 const MODE = String(arg("mode", "sync")); // sync | async
+const FROM_QUEUE = arg("from-queue", false) === true || arg("from-queue", false) === "true";
+const QUEUE_DATE = String(arg("queue-date", "")) || null; // YYYY-MM-DD; default today UTC
 const ENDPOINTS = String(arg("endpoints", "details,sales,listings"))
   .split(",")
   .map((s) => s.trim())
@@ -54,16 +58,21 @@ const ENDPOINTS = String(arg("endpoints", "details,sales,listings"))
 const INCLUDE_LISTINGS = ENDPOINTS.includes("listings");
 /** TCG listings page size (API max that returns rows). */
 const LISTINGS_PAGE_SIZE = 50;
-/** Safety cap — 50 pages × 50 = 2500 listing rows. */
-const LISTINGS_MAX_PAGES = 50;
+/** Safety cap — 50 pages × 50 = 2500 listing rows. Spotlight queue caps at 2. */
+const LISTINGS_MAX_PAGES = Math.max(1, Number(arg("listings-max-pages", "50")));
+const SPOTLIGHT_LISTINGS_MAX_PAGES = Math.max(1, Number(arg("spotlight-listings-pages", "2")));
 /** Per-request Unlocker attempts (empty body / 502 / timeout). */
 const UNLOCK_RETRIES = 4;
 /** Fail the GHA job if failure rate exceeds this (after retries). */
 const MAX_FAIL_RATE = 0.05;
+const PREFLIGHT_PRODUCT_ID = Number(arg("preflight-product-id", "610516"));
 
 /** Shared backoff when the Unlocker zone starts returning empties/502s. */
 let zoneCooldownUntil = 0;
 let consecutiveTransientFails = 0;
+let consecutiveUnlockOk = 0;
+let cooldownLevel = 0;
+let fatalUnlockError = null;
 
 const API = "https://api.brightdata.com/request";
 const ASYNC_SUBMIT = "https://api.brightdata.com/unblocker/req";
@@ -83,8 +92,13 @@ function cleanSecret(v) {
 }
 
 const KEY = cleanSecret(env.BRIGHT_DATA_API_KEY);
-const SYNC_ZONE = cleanSecret(env.BRIGHT_DATA_UNLOCKER_ZONE) || "tcb_1";
-const ASYNC_ZONE = cleanSecret(env.BRIGHT_DATA_UNLOCKER_ASYNC_ZONE);
+const SYNC_ZONE =
+  cleanSecret(env.BRIGHT_DATA_TCGPLAYER_UNLOCKER_ZONE) ||
+  cleanSecret(env.BRIGHT_DATA_UNLOCKER_ZONE) ||
+  "tcb_1";
+const ASYNC_ZONE =
+  cleanSecret(env.BRIGHT_DATA_TCGPLAYER_UNLOCKER_ASYNC_ZONE) ||
+  cleanSecret(env.BRIGHT_DATA_UNLOCKER_ASYNC_ZONE);
 const DB_URL = cleanSecret(env.PIPELINE_DB_URL || env.SUPABASE_DB_URL || env.DATABASE_URL);
 
 if (!KEY) {
@@ -96,12 +110,20 @@ if (!DB_URL) {
   process.exit(1);
 }
 if (MODE === "async" && !ASYNC_ZONE) {
-  console.error("BRIGHT_DATA_UNLOCKER_ASYNC_ZONE required for --mode async");
+  console.error(
+    "BRIGHT_DATA_TCGPLAYER_UNLOCKER_ASYNC_ZONE or BRIGHT_DATA_UNLOCKER_ASYNC_ZONE required for --mode async",
+  );
+  process.exit(1);
+}
+if (!cleanSecret(env.BRIGHT_DATA_TCGPLAYER_UNLOCKER_ZONE) && /ebay/i.test(SYNC_ZONE)) {
+  console.error(
+    "BRIGHT_DATA_TCGPLAYER_UNLOCKER_ZONE is required for liquidity; the fallback BRIGHT_DATA_UNLOCKER_ZONE appears eBay-specific.",
+  );
   process.exit(1);
 }
 
 console.log(
-  `[bulk-liquidity] auth key_len=${KEY.length} zone=${JSON.stringify(SYNC_ZONE)}`,
+  `[bulk-liquidity] auth key_len=${KEY.length} zone=${JSON.stringify(SYNC_ZONE)} async_zone=${ASYNC_ZONE ? "set" : "unset"}`,
 );
 
 const sql = postgres(DB_URL, { prepare: false, ssl: "require", max: CONCURRENCY + 2 });
@@ -191,19 +213,27 @@ function isTransientUnlockError(msg) {
   );
 }
 
+function isFatalUnlockError(msg) {
+  return /account is suspended|client_10020|proxy authentication required|invalid api key|credentials|zone .*not found|Unlocker 401|Unlocker 407/i.test(
+    msg,
+  );
+}
+
 async function waitZoneCooldown() {
   const wait = zoneCooldownUntil - Date.now();
   if (wait > 0) await new Promise((r) => setTimeout(r, wait));
 }
 
 function noteTransientFail() {
+  consecutiveUnlockOk = 0;
   consecutiveTransientFails++;
   // After a burst of empties/502s, pause the whole pool — zone is saturated.
   if (consecutiveTransientFails >= 8) {
-    const coolMs = Math.min(120_000, 15_000 * Math.min(consecutiveTransientFails - 7, 6));
+    cooldownLevel = Math.min(cooldownLevel + 1, 4);
+    const coolMs = Math.min(180_000, 15_000 * Math.pow(2, cooldownLevel - 1));
     zoneCooldownUntil = Math.max(zoneCooldownUntil, Date.now() + coolMs);
     console.warn(
-      `[bulk-liquidity] zone cooldown ${Math.round(coolMs / 1000)}s after ${consecutiveTransientFails} transient fails`,
+      `[bulk-liquidity] zone cooldown ${Math.round(coolMs / 1000)}s after transient burst (level ${cooldownLevel})`,
     );
     consecutiveTransientFails = 0;
   }
@@ -211,10 +241,49 @@ function noteTransientFail() {
 
 function noteUnlockOk() {
   consecutiveTransientFails = 0;
+  consecutiveUnlockOk++;
+  if (consecutiveUnlockOk >= 25 && cooldownLevel > 0) {
+    cooldownLevel--;
+    consecutiveUnlockOk = 0;
+  }
+}
+
+function unwrapBrightDataResponse(text, url) {
+  if (!text.trim()) throw new Error("empty Unlocker body");
+  let wrapped;
+  try {
+    wrapped = JSON.parse(text);
+  } catch {
+    return text;
+  }
+  if (!wrapped || typeof wrapped !== "object" || !("status_code" in wrapped)) {
+    return text;
+  }
+
+  const headers = wrapped.headers || {};
+  const brdError =
+    headers["x-brd-error"] ||
+    headers["x-brd-error-code"] ||
+    headers["x-brd-err-msg"] ||
+    headers["x-brd-err-code"] ||
+    headers["x-luminati-error"] ||
+    headers["x-luminati-error-code"] ||
+    wrapped.error ||
+    wrapped.error_message;
+  const status = Number(wrapped.status_code);
+  if (brdError || status >= 400) {
+    throw new Error(
+      `Unlocker upstream ${Number.isFinite(status) ? status : "?"}: ${String(
+        brdError || "unknown Bright Data error",
+      ).slice(0, 220)}`,
+    );
+  }
+  if (typeof wrapped.body === "string" && wrapped.body.trim()) return wrapped.body;
+  throw new Error(`empty Unlocker body after upstream ${status || "?"} for ${url.slice(0, 120)}`);
 }
 
 async function syncUnlockOnce(url, { method = "GET", body, headers } = {}) {
-  const payload = { zone: SYNC_ZONE, url, format: "raw" };
+  const payload = { zone: SYNC_ZONE, url, format: "json", country: "us" };
   if (method !== "GET") payload.method = method;
   if (body) payload.body = body;
   if (headers) payload.headers = headers;
@@ -226,8 +295,7 @@ async function syncUnlockOnce(url, { method = "GET", body, headers } = {}) {
   });
   const text = await res.text();
   if (!res.ok) throw new Error(`Unlocker ${res.status}: ${text.slice(0, 200)}`);
-  if (!text.trim()) throw new Error("empty Unlocker body");
-  return text;
+  return unwrapBrightDataResponse(text, url);
 }
 
 async function syncUnlock(url, opts = {}) {
@@ -241,6 +309,10 @@ async function syncUnlock(url, opts = {}) {
     } catch (e) {
       lastErr = e;
       const msg = e instanceof Error ? e.message : String(e);
+      if (isFatalUnlockError(msg)) {
+        fatalUnlockError = msg;
+        break;
+      }
       if (!isTransientUnlockError(msg) || attempt === UNLOCK_RETRIES) break;
       noteTransientFail();
       // 2s, 5s, 12s — give DataDome/Unlocker room to recover.
@@ -248,7 +320,9 @@ async function syncUnlock(url, opts = {}) {
       await new Promise((r) => setTimeout(r, backoff));
     }
   }
-  noteTransientFail();
+  if (!isFatalUnlockError(lastErr instanceof Error ? lastErr.message : String(lastErr))) {
+    noteTransientFail();
+  }
   throw lastErr;
 }
 
@@ -288,11 +362,30 @@ async function asyncUnlock(url, { method = "GET", body, headers } = {}) {
     if (res.status === 202) continue;
     const text = await res.text();
     if (!res.ok) throw new Error(`get_result ${res.status}: ${text.slice(0, 200)}`);
+    let j = null;
     try {
-      const j = JSON.parse(text);
-      if (typeof j.body === "string") return j.body;
+      j = JSON.parse(text);
     } catch {
       /* raw */
+    }
+    if (j && typeof j === "object") {
+      const status = Number(j.status_code);
+      const headers = j.headers || {};
+      const brdError =
+        headers["x-brd-error"] ||
+        headers["x-brd-error-code"] ||
+        headers["x-brd-err-msg"] ||
+        headers["x-brd-err-code"] ||
+        j.error ||
+        j.error_message;
+      if (brdError || status >= 400) {
+        throw new Error(
+          `Unlocker upstream ${Number.isFinite(status) ? status : "?"}: ${String(
+            brdError || "unknown Bright Data error",
+          ).slice(0, 220)}`,
+        );
+      }
+      if (typeof j.body === "string") return j.body;
     }
     return text;
   }
@@ -302,10 +395,14 @@ async function asyncUnlock(url, { method = "GET", body, headers } = {}) {
 const unlock = MODE === "async" ? asyncUnlock : syncUnlock;
 
 async function tcgDetails(pid) {
-  const t = await unlock(
-    `https://mp-search-api.tcgplayer.com/v2/product/${pid}/details`,
-    { headers: tcgHeaders(pid) },
-  );
+  let t;
+  try {
+    t = await unlock(`https://mp-search-api.tcgplayer.com/v2/product/${pid}/details`, {
+      headers: tcgHeaders(pid),
+    });
+  } catch (e) {
+    throw new Error(`details: ${e instanceof Error ? e.message : e}`);
+  }
   try {
     const j = JSON.parse(t);
     return {
@@ -319,14 +416,15 @@ async function tcgDetails(pid) {
   }
 }
 
-async function tcgListings(pid, printing) {
+async function tcgListings(pid, printing, maxPages = LISTINGS_MAX_PAGES) {
   let total = 0;
   let qty = 0;
   let lowest = null;
   let fetched = 0;
   const sellers = new Set();
+  const pageCap = Math.max(1, maxPages);
 
-  for (let page = 0; page < LISTINGS_MAX_PAGES; page++) {
+  for (let page = 0; page < pageCap; page++) {
     const term = { sellerStatus: "Live" };
     // Warehouse sub_type === TCG printing (Normal, Holofoil, Reverse Holofoil, …).
     if (printing) term.printing = printing;
@@ -342,10 +440,16 @@ async function tcgListings(pid, printing) {
       context: { shippingCountry: "US", cart: {} },
       aggregations: ["listingType"],
     });
-    const t = await unlock(
-      `https://mp-search-api.tcgplayer.com/v1/product/${pid}/listings`,
-      { method: "POST", body, headers: tcgHeaders(pid) },
-    );
+    let t;
+    try {
+      t = await unlock(`https://mp-search-api.tcgplayer.com/v1/product/${pid}/listings`, {
+        method: "POST",
+        body,
+        headers: tcgHeaders(pid),
+      });
+    } catch (e) {
+      throw new Error(`listings page ${page + 1}: ${e instanceof Error ? e.message : e}`);
+    }
     let batch = [];
     try {
       const inner = (JSON.parse(t).results || [{}])[0] || {};
@@ -375,10 +479,15 @@ async function tcgListings(pid, printing) {
 }
 
 async function tcgSales(pid) {
-  const t = await unlock(
-    `https://infinite-api.tcgplayer.com/price/history/${pid}/detailed?range=quarter`,
-    { headers: tcgHeaders(pid) },
-  );
+  let t;
+  try {
+    t = await unlock(
+      `https://infinite-api.tcgplayer.com/price/history/${pid}/detailed?range=quarter`,
+      { headers: tcgHeaders(pid) },
+    );
+  } catch (e) {
+    throw new Error(`sales: ${e instanceof Error ? e.message : e}`);
+  }
   try {
     return JSON.parse(t).result || [];
   } catch {
@@ -417,7 +526,8 @@ async function selectTargets() {
   // When listings are on, also re-hit rows missing exact total_quantity.
   return sql`
     select w.product_id, w.sub_type, w.market, p.name,
-           l.as_of as liq_as_of, l.total_quantity
+           l.as_of as liq_as_of, l.total_quantity,
+           null::text as tier, null::numeric as queue_score
     from price_windows w
     join products p on p.product_id = w.product_id
     left join liquidity l
@@ -447,6 +557,57 @@ async function selectTargets() {
   `;
 }
 
+/** Load today's ranked queue; dedupe so spotlight wins over trend for the same series. */
+async function selectFromQueue() {
+  const day = QUEUE_DATE || new Date().toISOString().slice(0, 10);
+  const rows = await sql`
+    select distinct on (q.product_id, q.sub_type)
+      q.product_id, q.sub_type, q.tier, q.score as queue_score,
+      q.group_id, q.queued_for,
+      w.market, p.name,
+      l.as_of as liq_as_of, l.total_quantity
+    from liquidity_scrape_queue q
+    join products p on p.product_id = q.product_id
+    left join price_windows w
+      on w.product_id = q.product_id and w.sub_type = q.sub_type
+    left join liquidity l
+      on l.product_id = q.product_id
+     and l.sub_type = q.sub_type
+     and l.source = 'tcgplayer'
+    where q.queued_for = ${day}::date
+      and q.status = 'pending'
+    order by
+      q.product_id, q.sub_type,
+      (q.tier = 'spotlight') desc,
+      q.score desc
+  `;
+  return rows;
+}
+
+async function markQueueStatus(productId, subType, tier, status) {
+  const day = QUEUE_DATE || new Date().toISOString().slice(0, 10);
+  if (tier) {
+    await sql`
+      update liquidity_scrape_queue
+      set status = ${status}
+      where product_id = ${productId}
+        and sub_type = ${subType}
+        and tier = ${tier}
+        and queued_for = ${day}::date
+    `;
+    return;
+  }
+  // Dedupe path: mark both tiers for the series.
+  await sql`
+    update liquidity_scrape_queue
+    set status = ${status}
+    where product_id = ${productId}
+      and sub_type = ${subType}
+      and queued_for = ${day}::date
+      and status in ('pending', 'running')
+  `;
+}
+
 async function priorSnapshot(productId, subType) {
   const rows = await sql`
     select as_of, active_listings, total_quantity, sold_velocity
@@ -467,17 +628,45 @@ async function priorSnapshot(productId, subType) {
   };
 }
 
+function rowScrapePlan(row) {
+  const tier = row.tier ? String(row.tier) : null;
+  if (tier === "spotlight") {
+    return {
+      tier,
+      includeListings: true,
+      listingsMaxPages: SPOTLIGHT_LISTINGS_MAX_PAGES,
+      endpoints: ["details", "sales", "listings"],
+    };
+  }
+  if (tier === "trend") {
+    return {
+      tier,
+      includeListings: false,
+      listingsMaxPages: 0,
+      endpoints: ["details", "sales"],
+    };
+  }
+  // Legacy / CLI endpoint flags.
+  return {
+    tier: null,
+    includeListings: INCLUDE_LISTINGS,
+    listingsMaxPages: LISTINGS_MAX_PAGES,
+    endpoints: ENDPOINTS,
+  };
+}
+
 async function enrichOne(row) {
   const pid = Number(row.product_id);
   const subType = String(row.sub_type);
+  const plan = rowScrapePlan(row);
   const prior = await priorSnapshot(pid, subType);
 
   const jobs = [tcgDetails(pid), tcgSales(pid)];
-  if (INCLUDE_LISTINGS) jobs.push(tcgListings(pid, subType));
+  if (plan.includeListings) jobs.push(tcgListings(pid, subType, plan.listingsMaxPages));
   const results = await Promise.all(jobs);
   const details = results[0];
   const series = results[1];
-  const listings = INCLUDE_LISTINGS ? results[2] : null;
+  const listings = plan.includeListings ? results[2] : null;
 
   const vel = aggVelocity(series, 13, subType);
   // Listing stats are printing-scoped; details API is product-wide — prefer listings.
@@ -530,7 +719,8 @@ async function enrichOne(row) {
          velocityWeeks: vel.weeks,
          name: row.name,
          mode: MODE,
-         endpoints: ENDPOINTS,
+         tier: plan.tier,
+         endpoints: plan.endpoints,
          printing: subType,
          listingsPages: listings?.pages ?? null,
          listingRowsFetched: listings?.total ?? null,
@@ -576,7 +766,7 @@ async function mapPool(items, concurrency, fn) {
   const out = [];
   let i = 0;
   async function worker() {
-    while (i < items.length) {
+    while (i < items.length && !fatalUnlockError) {
       const idx = i++;
       out[idx] = await fn(items[idx], idx);
     }
@@ -587,45 +777,70 @@ async function mapPool(items, concurrency, fn) {
 
 async function main() {
   console.log(
-    `[bulk-liquidity] max_market=${MAX_MARKET} stale_hours=${STALE_HOURS} limit=${LIMIT} concurrency=${CONCURRENCY} mode=${MODE} endpoints=${ENDPOINTS.join(",")}`,
+    `[bulk-liquidity] from_queue=${FROM_QUEUE} max_market=${MAX_MARKET} stale_hours=${STALE_HOURS} limit=${LIMIT} concurrency=${CONCURRENCY} mode=${MODE} endpoints=${ENDPOINTS.join(",")} spotlight_listings_pages=${SPOTLIGHT_LISTINGS_MAX_PAGES}`,
   );
+
+  console.log(`[bulk-liquidity] preflight product=${PREFLIGHT_PRODUCT_ID}`);
+  await tcgDetails(PREFLIGHT_PRODUCT_ID);
+  if (fatalUnlockError) throw new Error(`preflight failed: ${fatalUnlockError}`);
 
   const runRows = await sql`
     insert into ingest_runs (kind, status, detail)
     values ('liquidity', 'running', ${sql.json({
+      fromQueue: FROM_QUEUE,
+      queueDate: QUEUE_DATE,
       maxMarket: MAX_MARKET,
       staleHours: STALE_HOURS,
       limit: LIMIT,
       concurrency: CONCURRENCY,
       mode: MODE,
       endpoints: ENDPOINTS,
+      spotlightListingsPages: SPOTLIGHT_LISTINGS_MAX_PAGES,
     })})
     returning id
   `;
   const runId = runRows[0].id;
 
-  const targets = await selectTargets();
-  console.log(`[bulk-liquidity] selected ${targets.length} series`);
+  const targets = FROM_QUEUE ? await selectFromQueue() : await selectTargets();
+  const trendN = targets.filter((t) => t.tier === "trend").length;
+  const spotN = targets.filter((t) => t.tier === "spotlight").length;
+  console.log(
+    `[bulk-liquidity] selected ${targets.length} series` +
+      (FROM_QUEUE ? ` (trend=${trendN} spotlight=${spotN} after dedupe)` : ""),
+  );
 
   let ok = 0;
   let fail = 0;
   const t0 = Date.now();
 
   await mapPool(targets, CONCURRENCY, async (row, idx) => {
+    const pid = Number(row.product_id);
+    const subType = String(row.sub_type);
     try {
+      if (FROM_QUEUE) await markQueueStatus(pid, subType, null, "running");
       const r = await enrichOne(row);
       ok++;
+      if (FROM_QUEUE) await markQueueStatus(pid, subType, null, "done");
       if ((idx + 1) % 10 === 0 || idx === 0) {
         const elapsed = ((Date.now() - t0) / 1000).toFixed(0);
         const rate = ok / Math.max(1, (Date.now() - t0) / 1000);
         console.log(
-          `[bulk-liquidity] ${idx + 1}/${targets.length} ok=${ok} fail=${fail} ${elapsed}s ~${rate.toFixed(2)}/s last=${r.pid} score=${r.score}`,
+          `[bulk-liquidity] ${idx + 1}/${targets.length} ok=${ok} fail=${fail} ${elapsed}s ~${rate.toFixed(2)}/s last=${r.pid} score=${r.score} tier=${row.tier || "legacy"}`,
         );
       }
     } catch (e) {
       fail++;
+      if (FROM_QUEUE) {
+        try {
+          await markQueueStatus(pid, subType, null, "error");
+        } catch {
+          /* ignore status update failure */
+        }
+      }
+      const msg = e instanceof Error ? e.message : String(e);
+      if (isFatalUnlockError(msg)) fatalUnlockError = msg;
       console.error(
-        `[bulk-liquidity] FAIL ${row.product_id}/${row.sub_type}: ${e instanceof Error ? e.message : e}`,
+        `[bulk-liquidity] FAIL ${row.product_id}/${row.sub_type}: ${msg}`,
       );
     }
   });
@@ -640,15 +855,21 @@ async function main() {
         status = ${hardFail ? "error" : "ok"},
         rows = ${ok},
         detail = ${sql.json({
+          fromQueue: FROM_QUEUE,
+          queueDate: QUEUE_DATE,
           maxMarket: MAX_MARKET,
           staleHours: STALE_HOURS,
           limit: LIMIT,
           concurrency: CONCURRENCY,
           mode: MODE,
           endpoints: ENDPOINTS,
+          spotlightListingsPages: SPOTLIGHT_LISTINGS_MAX_PAGES,
           selected: targets.length,
+          trendSelected: trendN,
+          spotlightSelected: spotN,
           ok,
           fail,
+          fatalUnlockError,
           failRate,
           unlockRetries: UNLOCK_RETRIES,
           elapsedMs,
@@ -662,7 +883,7 @@ async function main() {
   );
   await sql.end({ timeout: 5 });
   // Non-zero exit so GHA is red unless the pass is clean enough to continue.
-  process.exit(hardFail ? 1 : 0);
+  process.exit(hardFail || fatalUnlockError ? 1 : 0);
 }
 
 main().catch(async (e) => {

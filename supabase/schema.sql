@@ -149,6 +149,32 @@ create index if not exists liq_snap_product_asof
 create index if not exists liq_asof_idx on liquidity (as_of);
 create index if not exists liq_score_idx on liquidity (liquidity_score desc nulls last);
 
+-- Set heat + budgeted scrape queue for cost-capped liquidity activation.
+-- Ranked from free tcgcsv price_windows; Bright Data only scrapes the queue.
+create table if not exists set_heat (
+  group_id    integer primary key references groups(group_id),
+  as_of       date    not null,
+  heat_score  numeric(6,2) not null,
+  metrics     jsonb
+);
+create index if not exists set_heat_score_idx on set_heat (heat_score desc);
+
+create table if not exists liquidity_scrape_queue (
+  product_id  integer not null,
+  sub_type    text    not null default 'Normal',
+  tier        text    not null,                     -- trend | spotlight
+  score       numeric(10,2) not null,
+  group_id    integer references groups(group_id),
+  queued_for  date    not null,
+  status      text    not null default 'pending',   -- pending|running|done|error|skipped
+  created_at  timestamptz not null default now(),
+  primary key (product_id, sub_type, tier, queued_for)
+);
+create index if not exists liq_queue_day_status_idx
+  on liquidity_scrape_queue (queued_for, status, tier);
+create index if not exists liq_queue_group_idx
+  on liquidity_scrape_queue (group_id, queued_for);
+
 -- ---------------------------------------------------------------------------
 -- Graded (PSA) comps + raw -> graded spread  (the alt-asset alpha)
 -- ---------------------------------------------------------------------------
@@ -404,6 +430,8 @@ alter table daily_prices enable row level security;
 alter table price_windows enable row level security;
 alter table liquidity enable row level security;
 alter table liquidity_snapshots enable row level security;
+alter table set_heat enable row level security;
+alter table liquidity_scrape_queue enable row level security;
 alter table graded_comps enable row level security;
 alter table creators enable row level security;
 alter table posts enable row level security;

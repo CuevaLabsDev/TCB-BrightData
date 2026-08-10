@@ -481,6 +481,212 @@ export async function getLiquidityBoard(limit = 12): Promise<LiquidityBoardRow[]
   }));
 }
 
+export interface LiquiditySpotlightRow {
+  productId: number;
+  subType: string;
+  name: string;
+  setName: string | null;
+  groupId: number | null;
+  market: number | null;
+  liquidityScore: number | null;
+  soldVelocity: number | null;
+  activeListings: number | null;
+  totalQuantity: number | null;
+  absorptionRatio: number | null;
+  bidAskSpreadPct: number | null;
+  asOf: string;
+}
+
+/** Thin-book / high-velocity spotlights from recent TCG liquidity. */
+export async function getLiquiditySpotlights(
+  limit = 8,
+): Promise<LiquiditySpotlightRow[]> {
+  const rows = await sql`
+    select l.product_id, l.sub_type, p.name, g.name as set_name, g.group_id,
+      w.market, l.liquidity_score, l.sold_velocity, l.active_listings,
+      l.total_quantity, l.absorption_ratio, l.bid_ask_spread_pct, l.as_of
+    from liquidity l
+    join products p on p.product_id = l.product_id
+    left join groups g on g.group_id = p.group_id
+    left join price_windows w
+      on w.product_id = l.product_id and w.sub_type = l.sub_type
+    where l.source = 'tcgplayer'
+      and l.as_of > now() - interval '7 days'
+      and coalesce(l.sold_velocity, 0) > 0
+    order by
+      (coalesce(l.sold_velocity, 0) * 20
+        + greatest(0, 40 - coalesce(l.active_listings, 40)) * 0.5
+        + coalesce(l.absorption_ratio, 0) * 8
+        + coalesce(l.liquidity_score, 0) * 0.15) desc,
+      l.as_of desc
+    limit ${limit}
+  `;
+  return rows.map((r) => ({
+    productId: Number(r.product_id),
+    subType: String(r.sub_type),
+    name: String(r.name),
+    setName: (r.set_name as string) ?? null,
+    groupId: r.group_id != null ? Number(r.group_id) : null,
+    market: num(r.market),
+    liquidityScore: num(r.liquidity_score),
+    soldVelocity: num(r.sold_velocity),
+    activeListings: num(r.active_listings),
+    totalQuantity: num(r.total_quantity),
+    absorptionRatio: num(r.absorption_ratio),
+    bidAskSpreadPct: num(r.bid_ask_spread_pct),
+    asOf: toIsoTimestamp(r.as_of),
+  }));
+}
+
+/** Per-set spotlights — same scoring, scoped to a group. */
+export async function getSetLiquiditySpotlights(
+  groupId: number,
+  limit = 6,
+): Promise<LiquiditySpotlightRow[]> {
+  const rows = await sql`
+    select l.product_id, l.sub_type, p.name, g.name as set_name, g.group_id,
+      w.market, l.liquidity_score, l.sold_velocity, l.active_listings,
+      l.total_quantity, l.absorption_ratio, l.bid_ask_spread_pct, l.as_of
+    from liquidity l
+    join products p on p.product_id = l.product_id
+    join groups g on g.group_id = p.group_id
+    left join price_windows w
+      on w.product_id = l.product_id and w.sub_type = l.sub_type
+    where l.source = 'tcgplayer'
+      and p.group_id = ${groupId}
+      and l.as_of > now() - interval '14 days'
+    order by
+      (coalesce(l.sold_velocity, 0) * 20
+        + greatest(0, 40 - coalesce(l.active_listings, 40)) * 0.5
+        + coalesce(l.absorption_ratio, 0) * 8
+        + coalesce(l.liquidity_score, 0) * 0.15) desc nulls last,
+      l.as_of desc
+    limit ${limit}
+  `;
+  return rows.map((r) => ({
+    productId: Number(r.product_id),
+    subType: String(r.sub_type),
+    name: String(r.name),
+    setName: (r.set_name as string) ?? null,
+    groupId: r.group_id != null ? Number(r.group_id) : null,
+    market: num(r.market),
+    liquidityScore: num(r.liquidity_score),
+    soldVelocity: num(r.sold_velocity),
+    activeListings: num(r.active_listings),
+    totalQuantity: num(r.total_quantity),
+    absorptionRatio: num(r.absorption_ratio),
+    bidAskSpreadPct: num(r.bid_ask_spread_pct),
+    asOf: toIsoTimestamp(r.as_of),
+  }));
+}
+
+export interface LiquidityTrendRow {
+  productId: number;
+  subType: string;
+  name: string;
+  setName: string | null;
+  market: number | null;
+  soldVelocity: number | null;
+  prevSoldVelocity: number | null;
+  velocityDelta: number | null;
+  activeListings: number | null;
+  prevActiveListings: number | null;
+  listingsDelta: number | null;
+  liquidityScore: number | null;
+  asOf: string;
+}
+
+/**
+ * Biggest recent changes in velocity / listing depth from liquidity_snapshots.
+ * Powers global "liquidity trends" surfaces.
+ */
+export async function getLiquidityTrends(limit = 8): Promise<LiquidityTrendRow[]> {
+  const rows = await sql`
+    with ranked as (
+      select s.*,
+        row_number() over (
+          partition by s.product_id, s.sub_type
+          order by s.as_of desc
+        ) as rn
+      from liquidity_snapshots s
+      where s.source = 'tcgplayer'
+        and s.as_of > now() - interval '14 days'
+    ),
+    paired as (
+      select
+        cur.product_id, cur.sub_type, cur.as_of,
+        cur.sold_velocity, prev.sold_velocity as prev_sold_velocity,
+        cur.active_listings, prev.active_listings as prev_active_listings,
+        cur.liquidity_score,
+        (coalesce(cur.sold_velocity, 0) - coalesce(prev.sold_velocity, 0)) as velocity_delta,
+        (coalesce(cur.active_listings, 0) - coalesce(prev.active_listings, 0)) as listings_delta
+      from ranked cur
+      join ranked prev
+        on prev.product_id = cur.product_id
+       and prev.sub_type = cur.sub_type
+       and prev.rn = 2
+      where cur.rn = 1
+    )
+    select p.product_id, p.sub_type, pr.name, g.name as set_name, w.market,
+      p.sold_velocity, p.prev_sold_velocity, p.velocity_delta,
+      p.active_listings, p.prev_active_listings, p.listings_delta,
+      p.liquidity_score, p.as_of
+    from paired p
+    join products pr on pr.product_id = p.product_id
+    left join groups g on g.group_id = pr.group_id
+    left join price_windows w
+      on w.product_id = p.product_id and w.sub_type = p.sub_type
+    where abs(coalesce(p.velocity_delta, 0)) > 0.05
+       or abs(coalesce(p.listings_delta, 0)) >= 3
+    order by
+      (abs(coalesce(p.velocity_delta, 0)) * 40
+        + abs(coalesce(p.listings_delta, 0)) * 0.8) desc
+    limit ${limit}
+  `;
+  return rows.map((r) => ({
+    productId: Number(r.product_id),
+    subType: String(r.sub_type),
+    name: String(r.name),
+    setName: (r.set_name as string) ?? null,
+    market: num(r.market),
+    soldVelocity: num(r.sold_velocity),
+    prevSoldVelocity: num(r.prev_sold_velocity),
+    velocityDelta: num(r.velocity_delta),
+    activeListings: num(r.active_listings),
+    prevActiveListings: num(r.prev_active_listings),
+    listingsDelta: num(r.listings_delta),
+    liquidityScore: num(r.liquidity_score),
+    asOf: toIsoTimestamp(r.as_of),
+  }));
+}
+
+export interface SetHeatRow {
+  groupId: number;
+  name: string;
+  heatScore: number;
+  asOf: string;
+  series: number | null;
+}
+
+export async function getHotSets(limit = 8): Promise<SetHeatRow[]> {
+  const rows = await sql`
+    select h.group_id, g.name, h.heat_score, h.as_of,
+      (h.metrics->>'series')::int as series
+    from set_heat h
+    join groups g on g.group_id = h.group_id
+    where coalesce((h.metrics->>'junk')::boolean, false) = false
+    order by h.heat_score desc
+    limit ${limit}
+  `;
+  return rows.map((r) => ({
+    groupId: Number(r.group_id),
+    name: String(r.name),
+    heatScore: Number(r.heat_score),
+    asOf: toIsoDateOnly(r.as_of) ?? String(r.as_of),
+    series: r.series != null ? Number(r.series) : null,
+  }));
+}
+
 export interface SetupCandidate {
   productId: number;
   name: string;

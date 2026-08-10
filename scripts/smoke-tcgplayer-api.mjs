@@ -11,13 +11,46 @@ for (const line of readFileSync(new URL("../.env.local", import.meta.url), "utf8
 }
 const API = "https://api.brightdata.com/request";
 const KEY = env.BRIGHT_DATA_API_KEY;
-const UNLOCK = env.BRIGHT_DATA_UNLOCKER_ZONE || "tcb_1";
+const UNLOCK = env.BRIGHT_DATA_TCGPLAYER_UNLOCKER_ZONE || env.BRIGHT_DATA_UNLOCKER_ZONE || "tcb_1";
 const PID = 610516; // Umbreon ex 161/131 Prismatic Evolutions
+const headers = (pid) => ({
+  "Content-Type": "application/json",
+  Accept: "application/json",
+  Origin: "https://www.tcgplayer.com",
+  Referer: `https://www.tcgplayer.com/product/${pid}/`,
+});
+
+function unwrap(text) {
+  try {
+    const wrapped = JSON.parse(text);
+    if (wrapped && typeof wrapped === "object" && "status_code" in wrapped) {
+      const h = wrapped.headers || {};
+      const err =
+        h["x-brd-error"] ||
+        h["x-brd-error-code"] ||
+        h["x-brd-err-msg"] ||
+        h["x-brd-err-code"] ||
+        wrapped.error ||
+        wrapped.error_message;
+      if (err || Number(wrapped.status_code) >= 400) {
+        return {
+          ok: false,
+          text: "",
+          error: `upstream ${wrapped.status_code}: ${String(err || "unknown Bright Data error").slice(0, 250)}`,
+        };
+      }
+      return { ok: true, text: wrapped.body || text };
+    }
+  } catch {
+    /* raw */
+  }
+  return { ok: Boolean(text.trim()), text, error: text.trim() ? null : "empty body" };
+}
 
 async function bd(url, { method = "GET", body } = {}) {
-  const payload = { zone: UNLOCK, url, format: "raw" };
+  const payload = { zone: UNLOCK, url, format: "json", country: "us", headers: headers(PID) };
   if (method !== "GET") payload.method = method;
-  if (body) payload.data = body;
+  if (body) payload.body = body;
   const res = await fetch(API, {
     method: "POST",
     headers: { Authorization: `Bearer ${KEY}`, "Content-Type": "application/json" },
@@ -25,13 +58,14 @@ async function bd(url, { method = "GET", body } = {}) {
     signal: AbortSignal.timeout(60000),
   });
   const text = await res.text();
-  return { status: res.status, text };
+  return { status: res.status, ...unwrap(text) };
 }
 
 console.log("[A] GET v2/product/{id}/details");
 try {
   const r = await bd(`https://mp-search-api.tcgplayer.com/v2/product/${PID}/details`);
   console.log("  status:", r.status);
+  if (!r.ok) console.log("  unlocker:", r.error);
   try {
     const j = JSON.parse(r.text);
     console.log("  productName:", j.productName, "| setName:", j.setName);
@@ -44,6 +78,7 @@ console.log("\n[B] GET infinite-api price/history detailed (sales velocity)");
 try {
   const r = await bd(`https://infinite-api.tcgplayer.com/price/history/${PID}/detailed?range=quarter`);
   console.log("  status:", r.status);
+  if (!r.ok) console.log("  unlocker:", r.error);
   try {
     const j = JSON.parse(r.text);
     const result = j.result || [];
@@ -65,6 +100,7 @@ try {
   });
   const r = await bd(`https://mp-search-api.tcgplayer.com/v1/product/${PID}/listings`, { method: "POST", body: listingBody });
   console.log("  status:", r.status);
+  if (!r.ok) console.log("  unlocker:", r.error);
   try {
     const j = JSON.parse(r.text);
     const inner = (j.results || [{}])[0];

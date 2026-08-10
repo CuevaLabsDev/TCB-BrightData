@@ -32,6 +32,9 @@ function serpZone() {
 function unlockerZone() {
   return process.env.BRIGHT_DATA_UNLOCKER_ZONE || "tcb_1";
 }
+function tcgplayerUnlockerZone() {
+  return process.env.BRIGHT_DATA_TCGPLAYER_UNLOCKER_ZONE || unlockerZone();
+}
 
 export interface RawRequestOpts {
   format?: "raw" | "json";
@@ -91,7 +94,10 @@ async function rawRequest(
         headers?: Record<string, string>;
       };
       const brdError =
-        wrapped.headers?.["x-brd-error"] ?? wrapped.headers?.["x-brd-error-code"];
+        wrapped.headers?.["x-brd-error"] ??
+        wrapped.headers?.["x-brd-error-code"] ??
+        wrapped.headers?.["x-brd-err-msg"] ??
+        wrapped.headers?.["x-brd-err-code"];
       if (brdError || (wrapped.status_code && wrapped.status_code >= 400)) {
         throw new Error(
           `Bright Data ${zone} upstream ${wrapped.status_code ?? "?"}: ${brdError ?? text.slice(0, 200)}`,
@@ -116,6 +122,14 @@ export async function unlockerRequest(
   opts: RawRequestOpts = {},
 ): Promise<string> {
   return rawRequest(unlockerZone(), url, opts);
+}
+
+/** TCGplayer-specific Web Unlocker zone for internal marketplace JSON APIs. */
+export async function tcgplayerUnlockerRequest(
+  url: string,
+  opts: RawRequestOpts = {},
+): Promise<string> {
+  return rawRequest(tcgplayerUnlockerZone(), url, opts);
 }
 
 /** Google SERP via Bright Data SERP API, parsed JSON (brd_json=1). */
@@ -179,6 +193,7 @@ export function brightDataStatus() {
     configured: hasBrightData(),
     serpZone: serpZone(),
     unlockerZone: unlockerZone(),
+    tcgplayerUnlockerZone: tcgplayerUnlockerZone(),
     asyncUnlockerZone: process.env.BRIGHT_DATA_UNLOCKER_ASYNC_ZONE || null,
   };
 }

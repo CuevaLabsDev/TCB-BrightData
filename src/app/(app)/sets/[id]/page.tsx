@@ -10,10 +10,18 @@ import {
   TrendingDown,
   TrendingUp,
 } from "lucide-react";
-import { getSet, getSetCards } from "@/lib/queries";
+import { getSet, getSetCards, getSetLiquiditySpotlights } from "@/lib/queries";
 import { Badge, Card } from "@/components/ui/primitives";
 import type { CardSummary } from "@/lib/types";
-import { changeColor, cn, formatCurrency, formatNumber, formatPercent, movementBadge } from "@/lib/utils";
+import {
+  changeColor,
+  cn,
+  formatCurrency,
+  formatNumber,
+  formatPercent,
+  liquidityBand,
+  movementBadge,
+} from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
@@ -31,7 +39,11 @@ export default async function SetPage({
   const groupId = Number(id);
   if (!Number.isFinite(groupId)) notFound();
 
-  const [set, cards] = await Promise.all([getSet(groupId), getSetCards(groupId, 240)]);
+  const [set, cards, liqSpotlights] = await Promise.all([
+    getSet(groupId),
+    getSetCards(groupId, 240),
+    getSetLiquiditySpotlights(groupId, 5),
+  ]);
   if (!set) notFound();
 
   const pricedCards = cards.filter((card) => card.market !== null);
@@ -106,6 +118,33 @@ export default async function SetPage({
               <PulseCard label="Biggest decliner" card={topDecliner} icon={TrendingDown} />
             )}
           </div>
+          {liqSpotlights.length > 0 && (
+            <div className="mt-5 border-t border-border pt-4">
+              <p className="text-[11px] uppercase tracking-wider text-subtle">Liquidity spotlights</p>
+              <div className="mt-2 flex flex-col gap-1">
+                {liqSpotlights.map((l) => {
+                  const band = liquidityBand(l.liquidityScore);
+                  return (
+                    <Link
+                      key={`${l.productId}-${l.subType}`}
+                      href={`/card/${l.productId}?sub=${encodeURIComponent(l.subType)}`}
+                      className="flex items-center justify-between gap-2 rounded-md px-1.5 py-1.5 transition hover:bg-panel-strong"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-sm text-foreground">{l.name}</p>
+                        <p className="truncate text-xs text-subtle">
+                          {l.soldVelocity?.toFixed(2) ?? "—"}/day · {l.activeListings ?? "—"} listings
+                        </p>
+                      </div>
+                      <span className={`shrink-0 text-sm font-semibold tabular-nums ${band.color}`}>
+                        {l.liquidityScore?.toFixed(0) ?? "—"}
+                      </span>
+                    </Link>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </Card>
       </section>
 

@@ -14,7 +14,8 @@ import {
 } from "lucide-react";
 import {
   getGradeArbitrageBoard,
-  getLiquidityBoard,
+  getLiquiditySpotlights,
+  getLiquidityTrends,
   getMarketMemory,
   getMarketStats,
   getTopCreators,
@@ -34,15 +35,17 @@ import {
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
-  const [stats, gainers, losers, gradeArb, liquidity, creators, memory] = await Promise.all([
-    getMarketStats(),
-    getTopMovers({ period: "30d", direction: "up", minMarket: 25, limit: 8 }),
-    getTopMovers({ period: "30d", direction: "down", minMarket: 25, limit: 5 }),
-    getGradeArbitrageBoard(6),
-    getLiquidityBoard(6),
-    getTopCreators(6),
-    getMarketMemory("market", 1),
-  ]);
+  const [stats, gainers, losers, gradeArb, spotlights, trends, creators, memory] =
+    await Promise.all([
+      getMarketStats(),
+      getTopMovers({ period: "30d", direction: "up", minMarket: 25, limit: 8 }),
+      getTopMovers({ period: "30d", direction: "down", minMarket: 25, limit: 5 }),
+      getGradeArbitrageBoard(6),
+      getLiquiditySpotlights(6),
+      getLiquidityTrends(6),
+      getTopCreators(6),
+      getMarketMemory("market", 1),
+    ]);
 
   const synthesis = memory.find((m) => m.title?.includes("synthesis")) ?? memory[0];
   const heroCards = [
@@ -245,32 +248,82 @@ export default async function DashboardPage() {
 
         <Card className="p-5">
           <SectionTitle
-            title="Liquidity leaders"
-            subtitle="TCGplayer velocity + depth + spread"
+            title="Liquidity spotlights"
+            subtitle="Thin book + high velocity (ranked scrape budget)"
             right={<Waves className="size-4 text-info" />}
           />
           <div className="flex flex-col gap-1">
-            {liquidity.length === 0 && (
-              <p className="py-6 text-center text-sm text-subtle">No liquidity data yet.</p>
+            {spotlights.length === 0 && (
+              <p className="py-6 text-center text-sm text-subtle">No liquidity spotlights yet.</p>
             )}
-            {liquidity.map((l) => {
+            {spotlights.map((l) => {
               const band = liquidityBand(l.liquidityScore);
               return (
                 <Link
-                  key={l.productId}
-                  href={`/card/${l.productId}`}
+                  key={`${l.productId}-${l.subType}`}
+                  href={`/card/${l.productId}?sub=${encodeURIComponent(l.subType)}`}
                   className="flex items-center gap-3 rounded-md px-2.5 py-2 transition hover:bg-panel-strong"
                 >
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm text-foreground">{l.name}</p>
                     <p className="truncate text-xs text-subtle">
-                      {l.soldVelocity?.toFixed(2)}/day · {l.activeListings ?? "—"} listings ·{" "}
-                      spread {l.bidAskSpreadPct === null ? "—" : `${l.bidAskSpreadPct}%`}
+                      {l.soldVelocity?.toFixed(2)}/day · {l.activeListings ?? "—"} listings
+                      {l.totalQuantity != null ? ` · qty ${l.totalQuantity}` : ""}
+                      {l.setName ? ` · ${l.setName}` : ""}
                     </p>
                   </div>
                   <span className={`shrink-0 text-sm font-semibold tabular-nums ${band.color}`}>
                     {l.liquidityScore?.toFixed(0) ?? "—"}
                   </span>
+                </Link>
+              );
+            })}
+          </div>
+        </Card>
+      </section>
+
+      <section>
+        <Card className="p-5">
+          <SectionTitle
+            title="Liquidity trends"
+            subtitle="Biggest recent changes in velocity and listing depth"
+            right={<Activity className="size-4 text-accent" />}
+          />
+          <div className="grid gap-1 sm:grid-cols-2">
+            {trends.length === 0 && (
+              <p className="col-span-full py-6 text-center text-sm text-subtle">
+                Trends appear after repeated scrapes build snapshot history.
+              </p>
+            )}
+            {trends.map((t) => {
+              const listUp = (t.listingsDelta ?? 0) > 0;
+              return (
+                <Link
+                  key={`${t.productId}-${t.subType}`}
+                  href={`/card/${t.productId}?sub=${encodeURIComponent(t.subType)}`}
+                  className="flex items-center gap-3 rounded-md px-2.5 py-2 transition hover:bg-panel-strong"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm text-foreground">{t.name}</p>
+                    <p className="truncate text-xs text-subtle">
+                      vel {t.prevSoldVelocity?.toFixed(2) ?? "—"}→{t.soldVelocity?.toFixed(2) ?? "—"}
+                      {" · "}
+                      listings {t.prevActiveListings ?? "—"}→{t.activeListings ?? "—"}
+                      {t.setName ? ` · ${t.setName}` : ""}
+                    </p>
+                  </div>
+                  <div className="shrink-0 text-right text-xs tabular-nums">
+                    <p className={changeColor(t.velocityDelta)}>
+                      {t.velocityDelta == null
+                        ? "—"
+                        : `${t.velocityDelta > 0 ? "+" : ""}${t.velocityDelta.toFixed(2)}/d`}
+                    </p>
+                    <p className={listUp ? "text-muted" : "text-accent"}>
+                      {t.listingsDelta == null
+                        ? "—"
+                        : `${t.listingsDelta > 0 ? "+" : ""}${t.listingsDelta} list`}
+                    </p>
+                  </div>
                 </Link>
               );
             })}

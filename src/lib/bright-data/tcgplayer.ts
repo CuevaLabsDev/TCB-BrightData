@@ -1,5 +1,5 @@
 import "server-only";
-import { unlockerRequest } from "./client";
+import { tcgplayerUnlockerRequest } from "./client";
 
 /**
  * TCGplayer marketplace intelligence via Bright Data Web Unlocker.
@@ -68,9 +68,15 @@ const n = (v: unknown): number | null => {
 const TCG_TIMEOUT_MS = 35_000;
 
 export async function getTcgDetails(productId: number): Promise<TcgDetails | null> {
-  const text = await unlockerRequest(
+  const text = await tcgplayerUnlockerRequest(
     `https://${LISTINGS_HOST}/v2/product/${productId}/details`,
-    { method: "GET", headers: tcgHeaders(productId), timeoutMs: TCG_TIMEOUT_MS },
+    {
+      method: "GET",
+      headers: tcgHeaders(productId),
+      timeoutMs: TCG_TIMEOUT_MS,
+      format: "json",
+      country: "us",
+    },
   );
   let j: Record<string, unknown>;
   try {
@@ -141,13 +147,15 @@ export async function getTcgListings(
   let total = 0;
 
   for (let page = 0; page < pageCap; page++) {
-    const text = await unlockerRequest(
+    const text = await tcgplayerUnlockerRequest(
       `https://${LISTINGS_HOST}/v1/product/${productId}/listings`,
       {
         method: "POST",
         body: listingsBody(page * size, size, opts.printing),
         headers: tcgHeaders(productId),
         timeoutMs: TCG_TIMEOUT_MS,
+        format: "json",
+        country: "us",
       },
     );
     let inner: Record<string, unknown>;
@@ -189,9 +197,15 @@ export async function getTcgSalesHistory(
   productId: number,
   range: "quarter" | "annual" = "quarter",
 ): Promise<TcgSalesSeries[]> {
-  const text = await unlockerRequest(
+  const text = await tcgplayerUnlockerRequest(
     `https://${HISTORY_HOST}/price/history/${productId}/detailed?range=${range}`,
-    { method: "GET", headers: tcgHeaders(productId), timeoutMs: TCG_TIMEOUT_MS },
+    {
+      method: "GET",
+      headers: tcgHeaders(productId),
+      timeoutMs: TCG_TIMEOUT_MS,
+      format: "json",
+      country: "us",
+    },
   );
   let result: Record<string, unknown>[];
   try {
